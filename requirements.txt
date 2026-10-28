@@ -1,0 +1,10 @@
+# 核心：零第三方依赖，Python 3.9+ 标准库即可运行（含 mock 渲染与全部测试）
+#
+# 可选增强：
+#   pip install mem0ai fastembed   # Mem0 语义记忆后端（AGENT_MEMORY_PROVIDER=mem0）
+#   # 国内网络需：export HF_ENDPOINT=https://hf-mirror.com（首次下载中文向量模型）
+#   pip install edge-tts            # 可选：/tts 语音合成（升级到 7.x 以过微软鉴权）
+#   # ---- 微信桥（docs/wechat_setup.md；wxhook 为默认通道）----
+#   pip install pysilk-mod zstandard imageio-ffmpeg   # wxhook：真语音气泡（全 wheel 免编译）
+#   #   SILK 编解码备选：pip install pilk（wheel 到 cp311）/ 装 Node 走 silk-wasm 兜底
+#   pip install wcferry                              # wcf 备选通道：微信 3.9.12.51

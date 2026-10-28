@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+# 零第三方依赖项目：所有 job 都不 pip install，直接跑标准库
+env:
+  PYTHONUTF8: '1'   # GH Windows runner 控制台默认 cp1252，打印中文会 UnicodeEncodeError
+jobs:
+  syntax:
+    name: 语法与导入
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 全量编译检查
+        run: python -m compileall -q src tests tools plugins
+      - name: 关键模块导入冒烟
+        run: python -c "import src.main, src.server, src.wechat_bridge, src.wxhook; print('import ok')"
+      - name: SILK 编解码 JS 语法
+        run: node --check tools/silk_node/codec.mjs
+
+  test:
+    name: 测试 py${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.9', '3.12', '3.13']
+        exclude:
+          - os: windows-latest
+            python: '3.9'
+          - os: windows-latest
+            python: '3.13'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 全量回归
+        run: python tests/run_all.py
+
+  scan:
+    name: 敏感信息扫描
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 导出检查（含密钥/wxid/本机路径扫描，命中即失败）
+        run: python tools/export_open_source.py --out /tmp/withme-open-source-check
+
+  release:
+    name: 发布包构建（tag 触发）
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [syntax, test, scan]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 构建开源发布包
+        run: python tools/export_open_source.py --out withme-open-source --zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: withme-open-source
+          path: withme-open-source.zip

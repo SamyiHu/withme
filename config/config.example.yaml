@@ -1,0 +1,116 @@
+# 全局引擎配置模板。复制为 config.yaml 后按需修改：
+#   cp config/config.example.yaml config/config.yaml
+# 角色相关的权限/冷却/预算/免打扰在 persona.yaml 中定义。
+# 默认 provider=mock，无 API key 即可完整运行（含全部测试）。
+
+llm:
+  provider: mock                 # mock | openai_compatible
+  api_key_env: LLM_API_KEY       # provider=openai_compatible 时从该环境变量读 key
+  base_url: "https://open.bigmodel.cn/api/paas/v4"   # 任何 OpenAI 兼容端点
+  model: glm-4-flash
+  temperature_surface: 0.8
+  timeout_seconds: 60
+  max_tokens: 16384  # 思考链吃预算，拉满（帽子不计费，网关实测 65536 都收）
+  prompt_in_user: true    # 部分网关会丢 system 角色：设定整段并入 user 消息
+
+tick:
+  fast_seconds: 60
+  medium_seconds: 3600
+  slow_seconds: 86400
+
+chaos:
+  seed_tau: 300                  # 种子刷新周期（秒）
+  epsilon_base: 0.05             # 噪声幅度上限（每次演化步的扰动尺度）
+  noise_smoothing: 0.8           # 相邻噪声向量的平滑系数
+
+convergence:
+  alpha: 0.15                    # 吸引子回拉强度
+  max_pull: 0.2                  # 单步回拉上限
+  distance_function: mad         # mad | rms
+  decay_tau_seconds: 1800        # 状态向基线弛豫的时间常数
+
+motivation:
+  weights: {social: 0.35, curiosity: 0.15, care: 0.25, expression: 0.15, disturb: 0.10}
+  loneliness_rate_per_hour: 0.04 # 无互动时 social_need 的自然上升速率
+  loneliness_cap: 0.95
+
+gate:
+  thresholds: {L1: 0.12, L2: 0.35, L3: 0.55}   # 经参数扫描校准的推荐值
+  scene_whitelist: ["chat", "idle"]
+
+memory:
+  retrieval_top_k: 5
+  min_salience: 0.3
+  salience_halflife_days: 14    # 检索排序时间衰减半衰期（天）；0=关闭
+  batch_extract: true           # mem0 后端攒批提炼（省 token；连续失败自动停用）
+  batch_min_items: 8            # 攒够几条候选才提炼一次
+  batch_min_minutes: 10         # 两次提炼最小间隔（分钟）
+
+# ---- 对话上下文压缩（滚动摘要）：近窗之外不裸丢，攒批折叠 ----
+dialogue:
+  window: 16              # 近窗保留原文条数（prompt 最近对话段）
+  compress_trigger: 30    # 未压缩消息积压到该条数触发后台压缩（约 30 轮上下文）
+  summary_max_chars: 900  # 滚动摘要长度上限
+
+# ---- 审核 Agent（双 Agent 模式的第二个人：前额叶，只判断、不说话）----
+# 互动 Agent 写完一句话，审核 Agent 在出门前拦毛病：能力否认/AI 自曝/客服腔/
+# 答非所问/群聊站队/微信口语度/主动消息空转。不过审就打回互动 Agent 重写一次。
+reviewer:
+  mode: llm                    # off=关 | rule=只跑确定性规则 | llm=规则+独立 LLM 审稿员（默认）
+  llm_purposes: ["respond", "proactive", "chime"]   # 这些用途每条都请审稿员
+  risk_triggers: true          # 名单之外的用途，规则抓到问题时也请审稿员终审
+  max_llm_per_day: 400         # 审稿调用日上限（0=不限），防预算被审核烧穿
+  max_tokens: 260              # 审稿只要一个短 JSON，别让它写作文
+  temperature: 0.1
+  timeout_seconds: 20          # 审稿超时：宁可放行也不卡住回复
+
+# ---- 微信桥（python -m src.main wechat，详见 docs/wechat_setup.md）----
+# 语音识别：复用 LLM 的 key 与网关（智谱 GLM-ASR，OpenAI 兼容 /audio/transcriptions）
+asr:
+  model: glm-asr-2512
+  base_url: "https://open.bigmodel.cn/api/paas/v4"   # 空 = 复用 llm.base_url
+  api_key_env: BIGMODEL_API_KEY
+
+# 联网搜索（web.search 手部）：智谱 Web Search Pro，与 ASR 共用一把 key
+web_search:
+  enabled: true
+  model: web-search-pro
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key_env: BIGMODEL_API_KEY
+  chain: ["bigmodel"]          # bigmodel 快搜打底；可加 "cush" 兜底（需配 cush_exe）
+  cush_exe: ""                 # 可选：Cush 万能搜（MCP）可执行文件路径；空=跳过
+
+# 画图（图片发送能力）：CogView-3-Flash 免费档。与 ASR 同理：网关不转发
+# /images/generations 时直连供应商端点，与 ASR/搜索共用 BIGMODEL_API_KEY
+image_gen:
+  enabled: true
+  model: cogview-3-flash
+  size: 1024x1024
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key_env: BIGMODEL_API_KEY
+
+wechat:
+  channel: wxhook            # wxhook（微信 4.x，真语音气泡）| wcf（微信 3.9.12.51，MP3 文件卡片）
+  multi_user: true           # 多用户：每个私聊用户一份独立人格实例；主人（下方 owner_wxid）用默认库
+  groups_enabled: true       # 群聊响应：只回被@（atuserlist 硬信号）或主人发言；群内纯文字回复
+  group_mention_only: true   # 群里其他人闲聊不回（false=群里所有消息都回，容易刷屏）
+  groups_proactive: true     # 群主动：引擎闸门把关（冷却/预算/免打扰），想聊就聊，发送时 @ 最近说话人
+  group_chime: true          # 群智能插嘴：群友说话静默 6s 后 AI 决定接不接（热络型，冷却/日限把关）
+  group_chime_cooldown_seconds: 300   # 同一群两次插嘴最小间隔
+  group_chime_daily_max: 12  # 每群每天自发插嘴上限
+  group_self_aliases: ["小满", "机器人"]  # 群里没@但这样叫也算叫它（群昵称自动识别）
+  allowed_wxids: []          # 空=所有私聊都响应；填 wxid 列表则白名单
+  max_users: 20              # 并发用户上限
+  server_url: "http://127.0.0.1:8787"
+  owner_wxid: ""             # 空 = 第一个私聊机器人的人自动绑定为唯一主人；也可填自己的 wxid
+  poll_seconds: 2.0          # 回复与主动消息共用 /pending 增量轮询
+  voice_reply: mirror        # mirror=你发语音她回语音 | always | never
+  voice_max_chars: 220       # 超过该长度的回复只发文字
+  media_dir: data/wechat_media
+  # wxhook 通道专属（channel: wxhook 时生效）
+  wxhook:
+    base_url: "http://127.0.0.1:30001"   # wechat-hook 的本地 HTTP 服务
+    fallback_poll_seconds: 60            # 兜底轮询间隔（0=关）。高频查库会与微信写库竞争
+                                         # （实测高频轮询致库损坏）——收消息以通知推送为主
+    notify_port: 18998                   # 新消息通知接收端口（=Weixin.exe 启动参数 CallBackURL）
+    data_root: ""                        # 微信数据目录；空=由 contact.db 路径推断

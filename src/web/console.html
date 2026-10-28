@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WithMe · 后台控制台</title>
+<style>
+  :root{
+    --bg:#080a0f; --bg2:#0d1119; --panel:rgba(20,24,34,.86); --panel2:#121722;
+    --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.14);
+    --text:#e8eaf2; --dim:#8b93a7; --faint:#5c6477;
+    --accent:#6f9cff; --accent2:#9c7bff; --good:#5fe0a0; --warn:#f3b55c; --bad:#ff6b7a;
+    --shadow:0 20px 60px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:
+      radial-gradient(900px 500px at 78% -10%, rgba(111,156,255,.13), transparent 60%),
+      radial-gradient(800px 500px at 5% 110%, rgba(156,123,255,.10), transparent 60%),
+      var(--bg);color:var(--text);
+      font:14px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+      display:flex;min-height:100vh}
+  aside{width:238px;flex:none;padding:24px 16px;border-right:1px solid var(--line);
+        background:linear-gradient(180deg,rgba(16,20,29,.96),rgba(8,10,15,.96));
+        position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:18px}
+  .brand{display:flex;align-items:center;gap:11px;padding:4px 8px 18px;border-bottom:1px solid var(--line)}
+  .logo{width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+        display:grid;place-items:center;font-weight:800;color:#0a0d14;font-size:15px;box-shadow:0 8px 24px rgba(111,156,255,.25)}
+  .brand .name{font-weight:700;letter-spacing:.04em;font-size:15px}
+  .brand .sub{font-size:10px;color:var(--faint);letter-spacing:.18em;text-transform:uppercase}
+  nav{display:flex;flex-direction:column;gap:4px}
+  nav button{display:flex;align-items:center;gap:11px;border:0;background:transparent;color:var(--dim);
+             padding:10px 12px;border-radius:10px;text-align:left;cursor:pointer;font-size:13px;transition:.16s}
+  nav button:hover{background:rgba(255,255,255,.045);color:var(--text)}
+  nav button.active{background:linear-gradient(90deg,rgba(111,156,255,.17),rgba(111,156,255,.03));
+                    color:#fff;box-shadow:inset 0 0 0 1px rgba(111,156,255,.18)}
+  nav button .ic{width:18px;text-align:center;color:var(--accent);font-size:14px}
+  .side-foot{margin-top:auto;padding:12px 8px 0;border-top:1px solid var(--line);font-size:11px;color:var(--faint);line-height:1.7}
+  .side-foot a{color:var(--accent);text-decoration:none}
+  main{flex:1;min-width:0;padding:26px 30px 70px}
+  .top{display:flex;align-items:flex-start;gap:18px;margin-bottom:22px}
+  .top h1{margin:0;font-size:24px;letter-spacing:-.02em}
+  .top .desc{color:var(--dim);font-size:12px;margin-top:4px}
+  .top .right{margin-left:auto;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .live{display:flex;align-items:center;gap:7px;color:var(--dim);font-size:12px;padding:7px 11px;
+        border:1px solid var(--line);border-radius:99px;background:rgba(10,13,19,.7)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 12px rgba(95,224,160,.8)}
+  .btn{border:1px solid var(--line2);background:rgba(255,255,255,.04);color:var(--text);
+       border-radius:9px;padding:8px 13px;cursor:pointer;font-size:12px;transition:.16s}
+  .btn:hover{border-color:var(--accent);background:rgba(111,156,255,.1)}
+  .btn.primary{background:linear-gradient(135deg,rgba(111,156,255,.9),rgba(156,123,255,.9));
+               border:0;color:#08101d;font-weight:700}
+  select{background:#10141d;border:1px solid var(--line2);color:var(--text);border-radius:9px;
+         padding:8px 10px;font-size:12px;min-width:150px}
+  .view{display:none;animation:fade .22s ease}
+  .view.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;
+        box-shadow:var(--shadow);backdrop-filter:blur(10px)}
+  .card h2{margin:0 0 14px;font-size:13px;font-weight:600;letter-spacing:.02em;color:#fff}
+  .card h2 .hint{font-weight:400;color:var(--faint);font-size:10px;margin-left:8px}
+  .span-3{grid-column:span 3}.span-4{grid-column:span 4}.span-5{grid-column:span 5}
+  .span-6{grid-column:span 6}.span-7{grid-column:span 7}.span-8{grid-column:span 8}
+  .span-9{grid-column:span 9}.span-12{grid-column:span 12}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .kpi{position:relative;overflow:hidden;background:linear-gradient(145deg,rgba(23,29,42,.95),rgba(12,16,24,.95));
+       border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+  .kpi:after{content:"";position:absolute;right:-20px;top:-30px;width:90px;height:90px;border-radius:50%;
+             background:radial-gradient(circle,rgba(111,156,255,.16),transparent 70%)}
+  .kpi .label{font-size:11px;color:var(--dim);letter-spacing:.04em}
+  .kpi .value{font-size:23px;font-weight:700;letter-spacing:-.03em;margin-top:5px;position:relative}
+  .kpi .sub{font-size:10px;color:var(--faint);margin-top:3px}
+  .tag{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:99px;
+       padding:3px 9px;font-size:10px;color:var(--dim);background:rgba(255,255,255,.025)}
+  .tag.creator{color:#f3c96b;border-color:rgba(243,201,107,.25);background:rgba(243,201,107,.07)}
+  .tag.agent{color:#9ec1ff;border-color:rgba(111,156,255,.25);background:rgba(111,156,255,.07)}
+  .radar-wrap{display:flex;gap:18px;align-items:center}
+  .radar{width:270px;height:270px;flex:none}
+  .legend{display:flex;flex-direction:column;gap:7px;font-size:11px;color:var(--dim)}
+  .legend i{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:7px}
+  .bar-row{display:grid;grid-template-columns:104px 1fr 54px;gap:10px;align-items:center;padding:5px 0}
+  .bar-label{font-size:11px;color:var(--dim)}
+  .track{display:block;height:7px;border-radius:99px;background:#070a10;overflow:hidden}
+  .fill{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#4c79e8,#83a9ff);transition:width .5s}
+  .fill.good{background:linear-gradient(90deg,#35b87a,#6ee7ad)}
+  .fill.warn{background:linear-gradient(90deg,#c78732,#f3bd65)}
+  .fill.bad{background:linear-gradient(90deg,#b54858,#ff7b8b)}
+  .num{font-variant-numeric:tabular-nums;text-align:right;font-size:11px;color:var(--dim)}
+  .person-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(255px,1fr));gap:12px}
+  .person{position:relative;background:linear-gradient(155deg,rgba(22,27,39,.96),rgba(11,15,22,.96));
+          border:1px solid var(--line);border-radius:14px;padding:14px;transition:.18s}
+  .person:hover{transform:translateY(-2px);border-color:var(--line2)}
+  .person .head{display:flex;align-items:center;gap:10px}
+  .avatar{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-weight:700;
+          background:linear-gradient(135deg,rgba(111,156,255,.25),rgba(156,123,255,.18));color:#dce6ff}
+  .person.creator .avatar{background:linear-gradient(135deg,rgba(243,201,107,.32),rgba(243,170,60,.14));color:#ffe3a5}
+  .person .who{min-width:0;flex:1}
+  .person .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .person .id{font-size:10px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gauge{width:54px;height:54px;flex:none}
+  .gauge .v{font-size:12px;font-weight:700;fill:var(--text)}
+  .mini-bars{margin-top:10px;display:grid;gap:3px}
+  .mini{display:grid;grid-template-columns:58px 1fr 30px;gap:6px;align-items:center;font-size:10px;color:var(--faint)}
+  .mini .track{display:block;height:4px}.mini .fill{display:block;height:100%}
+  .list{display:flex;flex-direction:column;gap:1px}
+  .item{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.055)}
+  .item:last-child{border-bottom:0}
+  .item .time{width:42px;flex:none;color:var(--faint);font-size:10px;font-variant-numeric:tabular-nums}
+  .item .body{min-width:0;flex:1}
+  .item .body .t{font-size:12px;color:#dfe4ef}
+  .item .body .s{font-size:10px;color:var(--faint);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mem-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;
+           padding:4px 8px;font-size:10px;color:var(--dim);margin:0 6px 6px 0;background:rgba(255,255,255,.02)}
+  .mem-chip b{color:var(--text)}
+  .config-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px 20px}
+  .conf{grid-column:span 6;display:flex;gap:12px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.055);font-size:11px;min-width:0}
+  .conf .k{width:160px;flex:none;color:var(--faint)}
+  .conf .v{color:var(--dim);word-break:break-word;flex:1;min-width:0}
+  .conf input{width:100%;max-width:230px;background:#0b0f16;border:1px solid var(--line);border-radius:6px;color:var(--text);padding:4px 7px;font:inherit;font-size:11px}
+  .conf input[type=checkbox]{width:auto}
+  .conf .row{display:flex;align-items:center;gap:8px}
+  .section-title{grid-column:span 12;display:flex;align-items:center;gap:10px;margin:6px 0 0;
+                 font-size:11px;color:var(--faint);letter-spacing:.12em;text-transform:uppercase}
+  .section-title:after{content:"";flex:1;height:1px;background:var(--line)}
+  table{width:100%;border-collapse:collapse;font-size:11px}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}
+  th{color:var(--faint);font-weight:500;font-size:10px}
+  td.mono{font-variant-numeric:tabular-nums;color:var(--faint)}
+  .empty{color:var(--faint);font-size:12px;padding:16px 0;text-align:center;border:1px dashed var(--line);border-radius:10px}
+  .trace-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .trace-head h2{margin:0}
+  .trace-stats{display:flex;gap:6px;flex-wrap:wrap}
+  .ts{font-size:10px;color:var(--faint);border:1px solid var(--line);border-radius:7px;padding:4px 8px;background:rgba(255,255,255,.02)}
+  .ts b{color:var(--text);font-weight:600}.ts.on{border-color:rgba(111,156,255,.35);color:var(--accent)}
+  #traj-search{margin-left:auto;width:230px;background:#0b0f16;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:7px 10px;font:inherit;font-size:11px}
+  /* ---- 会话轨迹：每个会话一根真实时间轴（绝对时间摆位，不是等距示意） ---- */
+  .traj-tools{display:flex;align-items:center;gap:10px;margin-left:auto}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:rgba(255,255,255,.02)}
+  .seg button{background:transparent;border:0;color:var(--faint);font:inherit;font-size:10px;padding:6px 9px;cursor:pointer}
+  .seg button.on{background:rgba(111,156,255,.18);color:var(--accent)}
+  .axes{border:1px solid var(--line);border-radius:12px;background:#090c12;padding:10px 12px 8px;margin-bottom:16px}
+  .ruler{display:grid;grid-template-columns:64px 1fr;gap:8px;align-items:end;margin-bottom:4px}
+  .ruler .rlabel{font-size:9px;color:var(--faint);text-align:right;padding-bottom:2px}
+  .ruler .rtrack{position:relative;height:15px;border-bottom:1px solid var(--line)}
+  .ruler .tick{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.07)}
+  .ruler .tick span{position:absolute;top:1px;left:4px;font-size:9px;color:var(--faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+  .axis{padding:5px 0 3px;border-top:1px dashed rgba(255,255,255,.07)}
+  .axis:first-of-type{border-top:0}
+  .axis.off{opacity:.45}
+  .axis-head{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim);margin:1px 0 4px}
+  .axis-head .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none}
+  .axis-head .dot.group{background:#5fe0a0}
+  .axis-head .meta{color:var(--faint);font-size:10px}
+  .axis-head .spacer{flex:1}
+  .axis-head button{background:transparent;border:1px solid var(--line);color:var(--faint);border-radius:6px;font-size:9px;padding:2px 7px;cursor:pointer}
+  .axis-head button:hover{color:var(--text);border-color:var(--line2)}
+  .arow{display:grid;grid-template-columns:64px 1fr;gap:8px;align-items:center;margin:2px 0}
+  .arow>span{font-size:9px;color:var(--faint);text-align:right}
+  .atrack{position:relative;height:17px;background:rgba(255,255,255,.022);border-radius:5px;overflow:hidden}
+  .atrack.grid:before{content:"";position:absolute;inset:0;background-image:linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px);background-size:12.5% 100%}
+  .ablk{position:absolute;top:3px;height:11px;border-radius:3px;min-width:3px;cursor:pointer;transition:filter .12s}
+  .ablk:hover{filter:brightness(1.4)}
+  .ablk.input{background:#5fe0a0}
+  .ablk.model{background:#8b7bff}
+  .ablk.tool{background:#f3b55c}
+  .ablk.flag{box-shadow:inset 0 0 0 1px rgba(255,120,120,.9)}
+  .axis-legend{display:flex;gap:16px;font-size:9px;color:var(--faint);padding:8px 0 2px;border-top:1px solid var(--line);margin-top:6px}
+  .axis-legend i{display:inline-block;width:14px;height:6px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  .sess-title{display:flex;align-items:center;gap:9px;margin:16px 0 4px;font-size:11px;color:var(--dim)}
+  .sess-title .dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+  .sess-title .dot.group{background:#5fe0a0}
+  .sess-title .mini{color:var(--faint);font-size:10px}
+  .round{scroll-margin-top:80px}
+  .round.flash{background:rgba(111,156,255,.09);border-radius:10px;transition:background .25s}
+  .drawer{position:fixed;top:0;right:0;height:100vh;width:min(430px,92vw);background:#0b1017;border-left:1px solid var(--line);
+          transform:translateX(102%);transition:transform .22s ease;z-index:60;display:flex;flex-direction:column;box-shadow:-20px 0 60px rgba(0,0,0,.45)}
+  .drawer.open{transform:none}
+  .drawer-head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line);font-size:12px;color:var(--text)}
+  .drawer-head .meta2{color:var(--faint);font-size:10px}
+  .drawer-head button{margin-left:auto;background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:7px;width:26px;height:26px;cursor:pointer;font-size:13px;line-height:1}
+  .drawer-body{padding:14px 16px 40px;overflow:auto;font-size:11px;color:var(--dim)}
+  .drawer-body .dsec{margin-bottom:14px}
+  .drawer-body .dsec .t{font-size:10px;color:var(--faint);letter-spacing:.08em;margin-bottom:5px}
+  .drawer-body .dbub{background:rgba(20,26,38,.9);border:1px solid var(--line);border-radius:10px;padding:8px 11px;font-size:11px;white-space:pre-wrap;color:#dfe4ef}
+  .round{border-bottom:1px solid rgba(255,255,255,.06);padding:12px 0}
+  .round:last-child{border-bottom:0}
+  .round-head{display:flex;gap:10px;align-items:center;font-size:10px;color:var(--faint);margin-bottom:7px}
+  .round-head b{color:var(--dim);font-weight:600;font-size:11px}
+  .round-head .dotline{flex:1;height:1px;background:var(--line)}
+  .traj{position:relative;padding-left:22px}
+  .traj:before{content:"";position:absolute;left:5px;top:4px;bottom:4px;width:1px;background:var(--line)}
+  .te{position:relative;margin:0 0 16px}
+  .te:before{content:"";position:absolute;left:-21px;top:5px;width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--bg)}
+  .te.tool:before{background:var(--warn)}.te.user:before{background:var(--good)}
+  .te .meta{display:flex;gap:8px;align-items:center;font-size:10px;color:var(--faint);margin-bottom:3px}
+  .te .who{font-weight:600;color:var(--dim)}
+  .te .bubble{background:rgba(20,26,38,.9);border:1px solid var(--line);border-radius:11px;padding:9px 12px;font-size:12px;white-space:pre-wrap;word-break:break-word;color:#dfe4ef}
+  .te.user .bubble{border-color:rgba(95,224,160,.16);background:rgba(24,42,35,.7)}
+  .te.tool .bubble{border-color:rgba(243,181,92,.2);background:rgba(42,32,18,.7)}
+  .trace{margin-top:6px;display:flex;flex-wrap:wrap;gap:5px;align-items:flex-start}
+  .chipx{font-size:10px;color:var(--dim);background:rgba(255,255,255,.035);border:1px solid var(--line);border-radius:7px;padding:3px 7px}
+  .chipx b{color:var(--text);font-weight:500}
+  .trace pre{flex:1;min-width:100%;margin-top:3px;background:#090c12;border:1px solid var(--line);border-radius:7px;padding:7px;color:var(--dim);font:10px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap}
+  .groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+  .group-card{background:linear-gradient(150deg,rgba(22,27,39,.95),rgba(11,15,22,.95));border:1px solid var(--line);
+              border-radius:15px;padding:16px}
+  .group-card .gh{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .group-card .gh .name{font-weight:600;font-size:13px}
+  .group-card .gh .room{font-size:10px;color:var(--faint)}
+  .group-card .stats{display:flex;gap:16px;margin-bottom:10px}
+  .group-card .stats b{display:block;font-size:18px;color:#fff}
+  .group-card .stats span{font-size:10px;color:var(--faint)}
+  .person-chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-size:10px;color:var(--dim);background:rgba(255,255,255,.035);border:1px solid var(--line);
+        border-radius:99px;padding:3px 8px}
+  @media(max-width:1050px){
+    aside{width:70px;padding:18px 9px}.brand .name,.brand .sub,nav button span:not(.ic),.side-foot{display:none}
+    nav button{justify-content:center;padding:11px} main{padding:20px 16px 60px}
+    .span-3,.span-4,.span-5,.span-6,.span-7,.span-8,.span-9{grid-column:span 12}
+    .kpis{grid-template-columns:repeat(2,1fr)}.radar{width:220px;height:220px}
+  }
+  @media(max-width:620px){.top{align-items:flex-start;flex-wrap:wrap}.top .right{margin-left:0}
+    .radar-wrap{flex-direction:column}.radar{width:230px;height:230px}.config-grid{grid-template-columns:repeat(12,minmax(0,1fr))}.conf{grid-column:span 12}}
+</style>
+</head>
+<body>
+<aside>
+  <div class="brand"><div class="logo">W</div><div><div class="name">WithMe</div><div class="sub">Backend Console</div></div></div>
+  <nav>
+    <button class="active" data-view="overview"><span class="ic">◈</span><span>总览</span></button>
+    <button data-view="trajectory"><span class="ic">↝</span><span>会话轨迹</span></button>
+    <button data-view="people"><span class="ic">◉</span><span>人物卡</span></button>
+    <button data-view="memory"><span class="ic">▤</span><span>记忆</span></button>
+    <button data-view="logs"><span class="ic">↯</span><span>主动日志</span></button>
+    <button data-view="params"><span class="ic">⚙</span><span>参数</span></button>
+    <button data-view="groups"><span class="ic">◇</span><span>群 Agent</span></button>
+  </nav>
+  <div class="side-foot">WithMe · 人格化主动智能体<br><a href="/" target="_blank">↗ 打开聊天</a></div>
+</aside>
+<div class="drawer" id="traj-drawer"><div class="drawer-head"><b id="drawer-title">轨迹详情</b><span class="meta2" id="drawer-sub"></span><button id="drawer-close">×</button></div><div class="drawer-body" id="drawer-body"></div></div>
+<main>
+  <div class="top">
+    <div><h1 id="title">总览</h1><div class="desc" id="subtitle">状态、关系和生活轨迹</div></div>
+    <div class="right">
+      <div class="live"><span class="dot"></span><span id="health">连接中</span><span id="clock"></span></div>
+      <select id="group-select" style="display:none"></select>
+      <button class="btn" id="refresh">刷新</button>
+      <button class="btn primary" id="auto">自动刷新: 开</button>
+    </div>
+  </div>
+
+  <section class="view" id="v-trajectory"><div class="grid"><div class="card span-12">
+    <div class="trace-head"><h2>会话轨迹 <span class="hint">按真实时间排列 · 每条会话一根轴</span></h2><div class="trace-stats" id="trace-stats"></div>
+      <div class="traj-tools"><div class="seg" id="traj-window"><button data-win="3600">近1h</button><button data-win="21600">近6h</button><button data-win="86400" class="on">近24h</button><button data-win="0">全部</button></div>
+      <input id="traj-search" placeholder="搜索消息 / 工具 / 人物…"></div></div>
+    <div id="traj-axes"></div><div id="trajectory"><div class="empty">加载中…</div></div></div></div></section>
+
+  <section class="view active" id="v-overview">
+    <div class="grid">
+      <div class="span-12"><div class="kpis">
+        <div class="kpi"><div class="label">模型</div><div class="value" id="k-model">—</div><div class="sub" id="k-provider">—</div></div>
+        <div class="kpi"><div class="label">消息 / 记忆</div><div class="value" id="k-count">—</div><div class="sub" id="k-memtype">—</div></div>
+        <div class="kpi"><div class="label">今日主动</div><div class="value" id="k-active">—</div><div class="sub" id="k-perm">—</div></div>
+        <div class="kpi"><div class="label">成本</div><div class="value" id="k-cost">—</div><div class="sub" id="k-budget">—</div></div>
+      </div></div>
+      <div class="card span-7">
+        <h2>状态向量 <span class="hint">当前值 vs 人格吸引子</span></h2>
+        <div class="radar-wrap"><svg class="radar" id="radar" viewBox="0 0 270 270"></svg>
+          <div class="legend"><span><i style="background:#6f9cff"></i>当前状态</span><span><i style="background:#f3b55c"></i>吸引子中心</span><span class="mini" id="radar-meta"></span></div>
+        </div>
+      </div>
+      <div class="card span-5">
+        <h2>关系状态</h2><div id="relation-bars"></div>
+        <h2 style="margin-top:20px">动机权重</h2><div id="motivation-bars"></div>
+      </div>
+      <div class="card span-6"><h2>最近主动</h2><div class="list" id="overview-active"></div></div>
+      <div class="card span-6"><h2>最近记忆</h2><div class="list" id="overview-memory"></div></div>
+      <div class="card span-12"><h2>审核 Agent <span class="hint">双 Agent 模式的第二个人 · 只判断、不说话</span></h2><div id="review-panel"></div></div>
+    </div>
+  </section>
+
+  <section class="view" id="v-people">
+    <div class="grid"><div class="card span-12"><h2>人物卡 <span class="hint">当前 Agent</span></h2><div class="person-grid" id="people-current"></div></div></div>
+  </section>
+
+  <section class="view" id="v-memory">
+    <div class="grid"><div class="card span-12"><h2>记忆分布</h2><div id="mem-chips"></div>
+      <h2 style="margin-top:22px">最近记忆</h2><div id="mem-table"></div></div></div>
+  </section>
+
+  <section class="view" id="v-logs">
+    <div class="grid"><div class="card span-12"><h2>主动行为日志</h2><div id="log-table"></div></div></div>
+  </section>
+
+  <section class="view" id="v-params">
+    <div class="grid"><div class="card span-12"><h2>运行参数 <span class="hint">可调参数 · 保存后立即生效</span></h2><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><button class="btn primary" id="params-save">保存参数</button><span class="mini" id="params-toast"></span></div><div class="config-grid" id="config-grid"></div></div></div>
+  </section>
+
+  <section class="view" id="v-groups">
+    <div class="grid"><div class="card span-12"><h2>群 Agent <span class="hint">每个群独立库 / 人物卡</span></h2><div class="groups" id="groups"></div></div></div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pct = v => Math.max(0, Math.min(100, (Number(v) || 0) * 100));
+let DATA = null, TRAJ = null, AUTO = true, view = "overview", groupIdx = -1;
+
+function headers() {
+  const h = { "Content-Type": "application/json" };
+  const t = localStorage.getItem("wm_token");
+  if (t) h["Authorization"] = "Bearer " + t;
+  return h;
+}
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({ headers: headers() }, opts || {}));
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+function bar(label, value, cls) {
+  return '<div class="bar-row"><span class="bar-label">' + esc(label) + '</span>' +
+    '<span class="track"><span class="fill ' + (cls || '') + '" style="width:' + pct(value) + '%"></span></span>' +
+    '<span class="num">' + Number(value || 0).toFixed(2) + '</span></div>';
+}
+function mini(label, value) {
+  return '<div class="mini"><span>' + esc(label) + '</span><span class="track"><span class="fill" style="width:' +
+    pct(value) + '%"></span></span><span>' + Number(value || 0).toFixed(2) + '</span></div>';
+}
+function gauge(value, cls) {
+  const v = Math.max(0, Math.min(1, Number(value) || 0));
+  const dash = (v * 138).toFixed(1) + " 138";
+  return '<svg class="gauge" viewBox="0 0 54 54"><circle cx="27" cy="27" r="22" fill="none" stroke="#1b2130" stroke-width="5"/>' +
+    '<circle cx="27" cy="27" r="22" fill="none" stroke="' + (cls || '#6f9cff') + '" stroke-width="5" stroke-linecap="round" stroke-dasharray="' + dash + '" transform="rotate(-90 27 27)"/>' +
+    '<text x="27" y="31" text-anchor="middle" class="v">' + v.toFixed(2) + '</text></svg>';
+}
+function personCard(p) {
+  const creator = p.kind === 'creator';
+  const cls = creator ? 'person creator' : 'person';
+  const tags = creator ? '<span class="tag creator">创造者</span>' : '<span class="tag">' + esc(p.kind) + '</span>';
+  return '<div class="' + cls + '"><div class="head"><div class="avatar">' + esc((p.name || '?').slice(0,1)) +
+    '</div><div class="who"><div class="name">' + esc(p.name || p.wxid) + '</div><div class="id">' + esc(p.wxid) + '</div></div>' +
+    gauge(p.trust_benevolence, creator ? '#f3c96b' : '#6f9cff') + '</div>' +
+    '<div style="margin-top:8px">' + tags + '</div><div class="mini-bars">' +
+    mini('亲近', p.affinity) + mini('信任', p.trust_benevolence) + mini('身份可信', p.trust_identity) +
+    mini('能力可信', p.trust_competence) + mini('可披露', p.trust_disclosure) + mini('戒备', p.caution) +
+    '</div></div>';
+}
+function radar() {
+  const st = (DATA.status && DATA.status.state_vector) || {};
+  const att = {};
+  ((DATA.persona && DATA.persona.attractor) || []).forEach(a => att[a.state_name] = a);
+  const keys = Object.keys(st);
+  const cx = 135, cy = 135, R = 92;
+  const pts = (vals) => keys.map((k, i) => {
+    const a = -Math.PI/2 + i * 2*Math.PI/keys.length;
+    const r = R * Math.max(0, Math.min(1, Number(vals[k]) || 0));
+    return [cx + r*Math.cos(a), cy + r*Math.sin(a)];
+  });
+  const p1 = pts(st), p2 = pts(Object.fromEntries(keys.map(k => [k, (att[k]||{}).center || 0])));
+  const poly = a => a.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+  let g = '';
+  for (let ring=0.25; ring<=1; ring+=0.25) {
+    const rp = keys.map((k,i)=>{const a=-Math.PI/2+i*2*Math.PI/keys.length;return (cx+R*ring*Math.cos(a)).toFixed(1)+','+(cy+R*ring*Math.sin(a)).toFixed(1)}).join(' ');
+    g += '<polygon points="' + rp + '" fill="none" stroke="#1c2332" stroke-width="1"/>';
+  }
+  keys.forEach((k,i)=>{const a=-Math.PI/2+i*2*Math.PI/keys.length;const x=cx+R*Math.cos(a),y=cy+R*Math.sin(a);
+    g += '<line x1="' + cx + '" y1="' + cy + '" x2="' + x.toFixed(1) + '" y2="' + y.toFixed(1) + '" stroke="#1c2332"/>';
+    g += '<text x="' + (cx+(R+20)*Math.cos(a)).toFixed(1) + '" y="' + (cy+(R+20)*Math.sin(a)).toFixed(1) + '" fill="#6f788c" font-size="9" text-anchor="middle">' + esc(k) + '</text>';
+  });
+  g += '<polygon points="' + poly(p2) + '" fill="rgba(243,181,92,.10)" stroke="#f3b55c" stroke-width="1.2" stroke-dasharray="3 3"/>';
+  g += '<polygon points="' + poly(p1) + '" fill="rgba(111,156,255,.16)" stroke="#6f9cff" stroke-width="1.8"/>';
+  $('#radar').innerHTML = g;
+  $('#radar-meta').textContent = '距吸引子 ' + (DATA.status.attractor_distance ?? '—') + ' · 一致性 ' + (DATA.status.consistency ?? '—');
+}
+function renderOverview() {
+  const st = DATA.status || {}, cfg = DATA.config || {};
+  $('#k-model').textContent = (cfg.llm && cfg.llm.model) || '—';
+  $('#k-provider').textContent = (cfg.llm && cfg.llm.provider) || '—';
+  $('#k-count').textContent = (DATA.messages || 0) + ' / ' + ((DATA.memory && DATA.memory.total) || 0);
+  $('#k-memtype').textContent = ((DATA.memory && DATA.memory.by_type) || []).map(x => x.type + ' ' + x.count).join(' · ') || '—';
+  $('#k-active').textContent = JSON.stringify(st.active_today || {}).replace(/[{}"]/g,'').replace(/:/g,' ');
+  $('#k-perm').textContent = st.permission_level || '—';
+  $('#k-cost').textContent = ((st.cost && st.cost.used_today) || 0) + ' tk';
+  $('#k-budget').textContent = '预算 ' + ((st.cost && st.cost.budget) || 0);
+  radar();
+  const rel = st.relation || {};
+  $('#relation-bars').innerHTML = bar('亲近 affinity', rel.affinity || 0) + bar('信任 trust', rel.trust || 0) + bar('熟悉 familiarity', rel.familiarity || 0);
+  const w = (cfg.motivation && cfg.motivation.weights) || {};
+  $('#motivation-bars').innerHTML = Object.entries(w).map(([k,v]) => bar(k, v)).join('');
+  const logs = (DATA.active_logs || []).slice(0,5);
+  $('#overview-active').innerHTML = logs.length ? logs.map(l => '<div class="item"><div class="time">' + new Date((l.created_at||0)*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}) +
+    '</div><div class="body"><div class="t">L' + l.level + ' · ' + esc(l.intent_type) + '</div><div class="s">' + esc(l.rendered_text||'') + '</div></div></div>').join('') : '<div class="empty">暂无主动</div>';
+  const ms = (DATA.memory && DATA.memory.recent || []).slice(0,5);
+  $('#overview-memory').innerHTML = ms.length ? ms.map(m => '<div class="item"><div class="time">#' + m.id + '</div><div class="body"><div class="t">' + esc(m.type) + ' · ' + esc((m.content||'').slice(0,42)) + '</div><div class="s">person ' + esc(m.person_id ?? '-') + ' · ' + esc(m.scope||'') + '</div></div></div>').join('') : '<div class="empty">暂无记忆</div>';
+}
+function renderPeople() {
+  const people = DATA.people || [];
+  $('#people-current').innerHTML = people.length ? people.map(personCard).join('') : '<div class="empty">暂无人物卡</div>';
+}
+function renderMemory() {
+  const mt = (DATA.memory && DATA.memory.by_type) || [];
+  $('#mem-chips').innerHTML = mt.length ? mt.map(x => '<span class="mem-chip">' + esc(x.type) + ' <b>' + x.count + '</b></span>').join('') : '<div class="empty">暂无记忆</div>';
+  const rows = (DATA.memory && DATA.memory.recent) || [];
+  $('#mem-table').innerHTML = rows.length ? '<table><thead><tr><th>ID</th><th>类型</th><th>内容</th><th>人物</th><th>Scope</th></tr></thead><tbody>' +
+    rows.map(m => '<tr><td class="mono">' + m.id + '</td><td>' + esc(m.type) + '</td><td>' + esc((m.content||'').slice(0,100)) + '</td><td class="mono">' + (m.person_id ?? '-') + '</td><td class="mono">' + esc(m.scope||'') + '</td></tr>').join('') + '</tbody></table>' : '<div class="empty">暂无记忆</div>';
+}
+function renderLogs() {
+  const logs = DATA.active_logs || [];
+  $('#log-table').innerHTML = logs.length ? '<table><thead><tr><th>ID</th><th>时间</th><th>级别</th><th>意图</th><th>内容</th></tr></thead><tbody>' +
+    logs.map(l => '<tr><td class="mono">' + l.id + '</td><td class="mono">' + new Date((l.created_at||0)*1000).toLocaleString('zh-CN') + '</td><td>L' + l.level + '</td><td>' + esc(l.intent_type) + '</td><td>' + esc(l.rendered_text||'') + '</td></tr>').join('') + '</tbody></table>' : '<div class="empty">暂无主动日志</div>';
+}
+function configVal(path) {
+  let cur = DATA.config || {};
+  for (const p of path.split('.')) { if (cur == null) return '—'; cur = cur[p]; }
+  return cur == null ? '—' : (typeof cur === 'object' ? JSON.stringify(cur) : String(cur));
+}
+function getPath(path) {
+  let cur = path.startsWith('persona.') ? (DATA.persona || {}) : (DATA.config || {});
+  for (const p of path.split('.')) { if (cur == null) return ""; cur = cur[p]; }
+  return cur == null ? "" : cur;
+}
+function numField(label, path, step, min, max) {
+  return '<div class="conf"><span class="k">' + esc(label) + '</span><span class="v"><input type="number" data-path="' + esc(path) +
+    '" step="' + step + '" min="' + min + '" max="' + max + '" value="' + esc(getPath(path)) + '"></span></div>';
+}
+function boolField(label, path) {
+  return '<div class="conf"><span class="k">' + esc(label) + '</span><span class="v"><label class="row"><input type="checkbox" data-path="' + esc(path) + '"' +
+    (getPath(path) ? ' checked' : '') + '> 开启</label></span></div>';
+}
+function renderParams() {
+  if (view === 'params' && document.activeElement && document.activeElement.closest('#v-params')) return;
+  const cfg = DATA.config || {};
+  const parts = [];
+  parts.push('<div class="section-title">节奏 / 混沌 / 收敛</div>');
+  parts.push(numField('tick.fast_seconds', 'tick.fast_seconds', 1, 15, 3600));
+  parts.push(numField('tick.medium_seconds', 'tick.medium_seconds', 1, 60, 86400));
+  parts.push(numField('chaos.epsilon_base', 'chaos.epsilon_base', 0.01, 0, 0.5));
+  parts.push(numField('chaos.noise_smoothing', 'chaos.noise_smoothing', 0.01, 0, 0.99));
+  parts.push(numField('convergence.alpha', 'convergence.alpha', 0.01, 0, 1));
+  parts.push(numField('convergence.max_pull', 'convergence.max_pull', 0.01, 0, 1));
+  parts.push(numField('convergence.decay_tau_seconds', 'convergence.decay_tau_seconds', 60, 60, 86400));
+  parts.push('<div class="section-title">主动闸门</div>');
+  ['L1','L2','L3'].forEach(l => parts.push(numField('threshold ' + l, 'gate.thresholds.' + l, 0.01, 0, 1)));
+  ['social','curiosity','care','expression','disturb'].forEach(k => parts.push(numField('weight ' + k, 'motivation.weights.' + k, 0.01, 0, 1)));
+  parts.push('<div class="section-title">对话 / 成本 / 反思</div>');
+  parts.push(numField('dialogue.window', 'dialogue.window', 1, 4, 64));
+  parts.push(numField('dialogue.compress_trigger', 'dialogue.compress_trigger', 1, 8, 500));
+  parts.push(numField('cost.daily_token_budget', 'cost.daily_token_budget', 1000, 0, 100000000));
+  parts.push(boolField('reflection.enabled', 'reflection.enabled'));
+  parts.push(numField('reflection.min_interval_hours', 'reflection.min_interval_hours', 1, 1, 720));
+  parts.push(numField('reflection.min_new_messages', 'reflection.min_new_messages', 1, 1, 1000));
+  parts.push(numField('reflection.max_drift', 'reflection.max_drift', 0.01, 0, 0.5));
+  parts.push('<div class="section-title">人格权限 / 冷却 / 预算</div>');
+  ['L0','L1','L2','L3'].forEach(l => parts.push(boolField('permission ' + l, 'persona.active_permissions.' + l)));
+  ['L1','L2','L3'].forEach(l => parts.push(numField('cooldown ' + l, 'persona.cooldown_seconds.' + l, 1, 0, 86400 * 30)));
+  ['L1','L2','L3'].forEach(l => parts.push(numField('budget ' + l, 'persona.daily_budget.' + l, 1, 0, 1000)));
+  const rv = cfg.reviewer || {};
+  parts.push('<div class="section-title">审核 Agent（双 Agent 的第二个人）</div>');
+  parts.push('<div class="conf"><span class="k">审核模式</span><span class="v"><select data-path="reviewer.mode" data-kind="text">' +
+    [['llm','规则 + LLM 审稿员（真双 Agent，推荐）'],['rule','只跑确定性规则（零额外成本）'],['off','关闭审核']].map(o =>
+      '<option value="' + o[0] + '"' + ((rv.mode || 'llm') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') +
+    '</select></span></div>');
+  parts.push('<div class="conf"><span class="k">走 LLM 审稿的用途（逗号分隔）</span><span class="v"><input data-path="reviewer.llm_purposes" data-kind="list" value="' +
+    esc((rv.llm_purposes || []).join(',')) + '"></span></div>');
+  parts.push(numField('reviewer.max_llm_per_day', 'reviewer.max_llm_per_day', 10, 0, 100000));
+  parts.push(numField('reviewer.timeout_seconds', 'reviewer.timeout_seconds', 1, 3, 120));
+  parts.push(numField('reviewer.max_tokens', 'reviewer.max_tokens', 10, 60, 4000));
+  parts.push('<div class="section-title">AI 接入（保存走 /settings）</div>');
+  parts.push('<div class="conf"><span class="k">LLM provider</span><span class="v"><input id="cfg-provider" value="' + esc((cfg.llm && cfg.llm.provider) || '') + '"></span></div>');
+  parts.push('<div class="conf"><span class="k">LLM model</span><span class="v"><input id="cfg-model" value="' + esc((cfg.llm && cfg.llm.model) || '') + '"></span></div>');
+  parts.push('<div class="conf"><span class="k">LLM base_url</span><span class="v"><input id="cfg-base" style="width:280px" value="' + esc((cfg.llm && cfg.llm.base_url) || '') + '"></span></div>');
+  parts.push('<div class="conf"><span class="k">API Key（留空不变）</span><span class="v"><input id="cfg-key" placeholder="sk-..."></span></div>');
+  parts.push('<div class="conf"><span class="k">memory provider</span><span class="v"><input id="cfg-mem" value="' + esc((cfg.memory && cfg.memory.provider) || '') + '"></span></div>');
+  $('#config-grid').innerHTML = parts.join('');
+}
+function collectParams() {
+  const out = {tick:{},chaos:{},convergence:{},gate:{thresholds:{}},motivation:{weights:{}},dialogue:{},cost:{},reflection:{},reviewer:{},persona:{active_permissions:{},cooldown_seconds:{},daily_budget:{}}};
+  document.querySelectorAll('#config-grid [data-path]').forEach(el => {
+    const path = el.getAttribute('data-path');
+    const kind = el.getAttribute('data-kind');
+    const val = el.type === 'checkbox' ? el.checked
+      : (kind === 'text' ? String(el.value)
+        : (kind === 'list' ? String(el.value).split(',').map(s => s.trim()).filter(Boolean)
+          : Number(el.value)));
+    const seg = path.split('.');
+    let cur = out;
+    for (let k = 0; k < seg.length - 1; k++) { cur[seg[k]] = cur[seg[k]] || {}; cur = cur[seg[k]]; }
+    cur[seg[seg.length - 1]] = val;
+  });
+  return out;
+}
+async function saveParams() {
+  const toast = $('#params-toast');
+  toast.textContent = '保存中…';
+  try {
+    const settingsPayload = {
+      llm: {provider: $('#cfg-provider').value.trim(), model: $('#cfg-model').value.trim(),
+            base_url: $('#cfg-base').value.trim()},
+      memory: {provider: $('#cfg-mem').value.trim()},
+    };
+    if ($('#cfg-key').value.trim()) settingsPayload.llm.api_key = $('#cfg-key').value.trim();
+    await api('/settings', {method:'PUT', body: JSON.stringify(settingsPayload)});
+    await api('/config', {method:'POST', body: JSON.stringify(collectParams())});
+    toast.textContent = '已保存并立即生效 ✓';
+    setTimeout(() => { toast.textContent = ''; refresh(); }, 900);
+  } catch (e) { toast.textContent = '保存失败：' + e.message; }
+}
+function fmtTrace(it) {
+  const tr = it.trace || {};
+  const bits = [];
+  if (it.kind === "tool") {
+    return '<div class="trace"><span class="chipx">工具 <b>' + esc(it.action) + '</b></span>' +
+      '<pre>' + esc(JSON.stringify(it.params, null, 1)) + '\n→ ' + esc(JSON.stringify(it.result, null, 1)) + '</pre></div>';
+  }
+  if (it.sender === "user" && tr.perception) {
+    const p = tr.perception;
+    bits.push('<span class="chipx">意图 <b>' + esc(p.intent_type || "—") + '</b></span>');
+    bits.push('<span class="chipx">情绪 <b>' + esc(p.emotion || "—") + '</b></span>');
+    if (tr.addressee) bits.push('<span class="chipx">对谁 <b>' + esc(tr.addressee) + '</b></span>');
+    if ((p.topics || []).length) bits.push('<span class="chipx">话题 <b>' + esc((p.topics || []).join(" / ")) + '</b></span>');
+    if (p.reply_plan) bits.push('<pre>思考：' + esc(JSON.stringify(p.reply_plan, null, 1)) + '</pre>');
+    if (p.hand_action) bits.push('<pre>工具提议：' + esc(JSON.stringify(p.hand_action, null, 1)) + '</pre>');
+  }
+  if (it.sender === "agent") {
+    if (tr.proactive) bits.push('<span class="chipx">主动 <b>' + esc(tr.proactive.intent || "—") + '</b></span>');
+    if (tr.chime) bits.push('<span class="chipx">插嘴</span>');
+    if (tr.review) {
+      const iss = tr.review.issues || [];
+      bits.push('<span class="chipx">审核 <b>' + (iss.length ? esc(iss.join(' / ')) : '通过') + '</b>' +
+        (tr.review.llm_used ? ' · LLM' : '') + (tr.review.llm_failed ? ' · 降级' : '') + '</span>');
+    }
+    if (tr.memories != null) bits.push('<span class="chipx">记忆 <b>' + tr.memories + '</b> / ' + (tr.memory_tokens || 0) + ' tok</span>');
+    if (tr.prompt_tokens) bits.push('<span class="chipx">prompt <b>' + tr.prompt_tokens + '</b></span>');
+    if (tr.stance) bits.push('<span class="chipx">心情 <b>' + esc(tr.stance.mood || "—") + '</b></span>');
+    if (tr.style && tr.style.constraints && tr.style.constraints.length) bits.push('<span class="chipx">风格 <b>' + esc(tr.style.constraints.join(" / ")) + '</b></span>');
+    if (tr.active_log) {
+      const a = tr.active_log;
+      bits.push('<span class="chipx">评分 <b>' + esc(a.score_detail || "") + '</b></span>');
+      bits.push('<pre>闸门：' + esc(a.gate_result || "") + '</pre>');
+    }
+  }
+  return bits.length ? '<div class="trace">' + bits.join("") + '</div>' : "";
+}
+function buildRounds(items) {
+  const rounds = []; let cur = null;
+  for (const it of items) {
+    if (it.sender === "user") { cur = { items: [it], start: it.created_at, end: it.created_at }; rounds.push(cur); }
+    else { if (!cur) { cur = { items: [], start: it.created_at, end: it.created_at }; rounds.push(cur); } cur.items.push(it); cur.end = Math.max(cur.end, it.created_at); }
+  }
+  return rounds;
+}
+let TRAJ_WINDOW = 86400;   // 时间窗（秒），0=全部
+let TRAJ_OFF = new Set();  // 被收起的会话轴
+
+function clockAt(ts, withDate) {
+  const d = new Date((Number(ts) || 0) * 1000);
+  const hm = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  return withDate ? (d.getMonth() + 1) + '-' + d.getDate() + ' ' + hm : hm;
+}
+function durText(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.round(sec / 60) + 'm';
+  if (sec < 86400) return (sec / 3600).toFixed(1) + 'h';
+  return (sec / 86400).toFixed(1) + 'd';
+}
+function tickStep(span) {
+  const steps = [60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 604800];
+  for (const s of steps) if (span / s <= 7) return s;
+  return 604800;
+}
+function trajBlock(cls, left, width, tip, key, flagged) {
+  return '<div class="ablk ' + cls + (flagged ? ' flag' : '') + '" style="left:' + left.toFixed(2) +
+    '%;width:' + Math.max(0.4, width).toFixed(2) + '%" title="' + esc(tip) + '" data-round="' + esc(key) + '"></div>';
+}
+function axisLane(s, lane, rounds, pos) {
+  const out = [];
+  rounds.forEach((r, ri) => {
+    const key = s.id + '|' + ri;
+    if (lane === 'input') {
+      for (const it of r.items) {
+        if (it.sender === 'user') out.push(trajBlock('input', pos(it.created_at), 0.35,
+          (it.speaker || '用户') + ' · ' + clockAt(it.created_at), key));
+      }
+    } else if (lane === 'model') {
+      if (r.items.some(x => x.sender === 'agent')) {
+        out.push(trajBlock('model', pos(r.start), Math.max(0.5, pos(r.end) - pos(r.start)),
+          '模型回合 ' + clockAt(r.start) + ' → ' + clockAt(r.end) + ' · ' + Math.round(r.end - r.start) + 's', key));
+      }
+    } else {
+      for (const it of r.items) {
+        if (it.kind === 'tool') out.push(trajBlock('tool', pos(it.created_at), 0.5,
+          '工具 ' + (it.action || '') + ' · ' + clockAt(it.created_at), key));
+      }
+    }
+  });
+  return out.join('');
+}
+function renderRound(s, r, idx) {
+  const dur = Math.max(0, (r.end || r.start) - r.start);
+  let h = '<div class="round" id="round-' + esc(s.id) + '-' + idx + '"><div class="round-head"><b>第 ' + (idx + 1) + ' 轮</b><span>' +
+    clockAt(r.start, true) + '</span><span>' + Math.round(dur) + 's</span>' +
+    '<span>' + r.items.filter(x => x.kind === 'tool').length + ' 次工具</span><span class="dotline"></span></div>';
+  for (const it of r.items) {
+    const cls = it.kind === 'tool' ? 'tool' : (it.sender === 'user' ? 'user' : '');
+    const who = it.kind === 'tool' ? '工具调用' : (it.sender === 'user' ? (it.speaker || '用户') : (it.speaker || '小满'));
+    h += '<div class="te ' + cls + '"><div class="meta"><span class="who">' + esc(who) + '</span><span>' + clockAt(it.created_at, true) + '</span></div>' +
+      '<div class="bubble">' + esc(it.kind === 'tool' ? (it.action || '') : (it.content || '')) + '</div>' + fmtTrace(it) + '</div>';
+  }
+  return h + '</div>';
+}
+function renderTrajectory() {
+  const sessions = (TRAJ && TRAJ.sessions) || [];
+  const all = sessions.reduce((a, s) => a.concat(s.items || []), []);
+  const axesEl = $('#traj-axes');
+  if (!all.length) {
+    $('#trace-stats').innerHTML = '';
+    if (axesEl) axesEl.innerHTML = '';
+    $('#trajectory').innerHTML = '<div class="empty">暂无轨迹</div>';
+    return;
+  }
+  const times = all.map(x => Number(x.created_at) || 0);
+  const tMax = Math.max.apply(null, times);
+  const tMin = Math.min.apply(null, times);
+  const t0 = TRAJ_WINDOW ? Math.max(tMin, tMax - TRAJ_WINDOW) : tMin;
+  const t1 = Math.max(tMax, t0 + 60);
+  const span = t1 - t0;
+  const pos = t => Math.max(0, Math.min(100, ((Number(t) || t0) - t0) / span * 100));
+  const withDate = span > 86400;
+  const prep = sessions.map(s => {
+    const items = (s.items || []).filter(x => (Number(x.created_at) || 0) >= t0);
+    return { s: s, items: items, rounds: buildRounds(items) };
+  });
+  const roundsN = prep.reduce((a, p) => a + p.rounds.length, 0);
+  const callsN = prep.reduce((a, p) => a + p.items.filter(x => x.kind === 'tool').length, 0);
+  const msgN = prep.reduce((a, p) => a + p.items.filter(x => x.kind === 'message').length, 0);
+  $('#trace-stats').innerHTML =
+    '<span class="ts on">会话 <b>' + sessions.length + '</b></span>' +
+    '<span class="ts">轮次 <b>' + roundsN + '</b></span>' +
+    '<span class="ts">调用 <b>' + callsN + '</b></span>' +
+    '<span class="ts">消息 <b>' + msgN + '</b></span>' +
+    '<span class="ts">跨度 <b>' + durText(span) + '</b></span>';
+
+  const step = tickStep(span);
+  let ticks = '';
+  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+    ticks += '<div class="tick" style="left:' + pos(t).toFixed(2) + '%"><span>' + clockAt(t, withDate) + '</span></div>';
+  }
+  let html = '<div class="axes"><div class="ruler"><div class="rlabel">时间</div><div class="rtrack">' + ticks + '</div></div>';
+  for (const p of prep) {
+    const s = p.s, off = TRAJ_OFF.has(s.id);
+    const last = p.items.length ? p.items[p.items.length - 1].created_at : 0;
+    html += '<div class="axis' + (off ? ' off' : '') + '">' +
+      '<div class="axis-head"><span class="dot ' + (s.kind === 'group' ? 'group' : '') + '"></span><b>' + esc(s.label || s.id) + '</b>' +
+      '<span class="meta">' + (s.kind === 'group' ? '群聊' : '私聊') + ' · ' + p.rounds.length + ' 轮 · ' + p.items.length + ' 条' +
+      (last ? ' · 最近 ' + clockAt(last, withDate) : '') + '</span><span class="spacer"></span>' +
+      '<button data-toggle="' + esc(s.id) + '">' + (off ? '展开' : '收起') + '</button></div>' +
+      '<div class="arow"><span>输入</span><div class="atrack grid">' + axisLane(s, 'input', p.rounds, pos) + '</div></div>' +
+      '<div class="arow"><span>模型</span><div class="atrack grid">' + axisLane(s, 'model', p.rounds, pos) + '</div></div>' +
+      '<div class="arow"><span>工具</span><div class="atrack grid">' + axisLane(s, 'tool', p.rounds, pos) + '</div></div>' +
+      '</div>';
+  }
+  html += '<div class="axis-legend"><span><i style="background:#5fe0a0"></i>输入（谁说了什么）</span>' +
+    '<span><i style="background:#8b7bff"></i>模型（思考 → 出声）</span>' +
+    '<span><i style="background:#f3b55c"></i>工具调用</span>' +
+    '<span style="margin-left:auto">点色块跳到对应轮次 · 点"收起"折叠某条会话轴</span></div></div>';
+  axesEl.innerHTML = html;
+
+  const q = ($('#traj-search').value || '').trim().toLowerCase();
+  let list = '';
+  for (const p of prep) {
+    const s = p.s;
+    const keep = p.rounds.map(r => !q || (r.items || []).some(it =>
+      (((it.content || '') + ' ' + (it.action || '') + ' ' + (it.speaker || ''))).toLowerCase().includes(q)));
+    if (!keep.some(Boolean)) continue;
+    list += '<div class="sess-title"><span class="dot ' + (s.kind === 'group' ? 'group' : '') + '"></span><b>' +
+      esc(s.label || s.id) + '</b><span class="mini">' + keep.filter(Boolean).length + ' 轮' +
+      (s.room ? ' · ' + esc(s.room) : ' · 私聊') + '</span></div>';
+    p.rounds.forEach((r, ri) => { if (keep[ri]) list += renderRound(s, r, ri); });
+  }
+  $('#trajectory').innerHTML = list || '<div class="empty">没有匹配的轨迹</div>';
+}
+function openDrawer(key) {
+  const parts = String(key).split('|');
+  const sid = parts[0], idx = Number(parts[1]);
+  const session = ((TRAJ && TRAJ.sessions) || []).filter(s => s.id === sid)[0];
+  if (!session) return;
+  const rounds = buildRounds((session.items || []).filter(x => (Number(x.created_at) || 0) >= lastT0()));
+  const r = rounds[idx];
+  if (!r) return;
+  const dur = Math.max(0, (r.end || r.start) - r.start);
+  $('#drawer-title').textContent = (session.label || session.id) + ' · 第 ' + (idx + 1) + ' 轮';
+  $('#drawer-sub').textContent = clockAt(r.start, true) + ' → ' + clockAt(r.end || r.start, true) + ' · ' + Math.round(dur) + 's';
+  const blocks = r.items.map(it => {
+    if (it.kind === 'tool') {
+      return '<div class="dsec"><div class="t">工具 · ' + esc(it.action || '') + '</div>' +
+        '<pre>' + esc(JSON.stringify(it.params, null, 1)) + '</pre>' +
+        '<pre>' + esc(JSON.stringify(it.result, null, 1)).slice(0, 1200) + '</pre></div>';
+    }
+    const who = it.sender === 'user' ? (it.speaker || '对方') : (it.speaker || '小满');
+    return '<div class="dsec"><div class="t">' + esc(who) + ' · ' + clockAt(it.created_at, true) + '</div>' +
+      '<div class="dbub">' + esc(it.content || '') + '</div>' + fmtTrace(it) + '</div>';
+  }).join('');
+  $('#drawer-body').innerHTML = '<div class="dsec"><div class="t">' + esc(session.kind === 'group' ? '群聊' : '私聊') +
+    (session.room ? ' · ' + esc(session.room) : '') + '</div></div>' + blocks;
+  $('#traj-drawer').classList.add('open');
+}
+function lastT0() {
+  const all = ((TRAJ && TRAJ.sessions) || []).reduce((a, s) => a.concat(s.items || []), []);
+  const times = all.map(x => Number(x.created_at) || 0);
+  const tMax = Math.max.apply(null, times), tMin = Math.min.apply(null, times);
+  return TRAJ_WINDOW ? Math.max(tMin, tMax - TRAJ_WINDOW) : tMin;
+}
+function jumpRound(key) {
+  const el = document.getElementById('round-' + String(key).replace('|', '-'));
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1400);
+  }
+  openDrawer(key);
+}
+async function refreshTrajectory() {
+  try { TRAJ = await api('/trajectory?limit=120'); renderTrajectory(); }
+  catch (e) { $('#trajectory').innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>'; }
+}
+function renderReview() {
+  const r = (DATA && DATA.review) || {};
+  const modeLabel = { off: '关闭', rule: '只跑规则', llm: '规则 + LLM 审稿员' }[r.mode] || (r.mode || '—');
+  const bp = r.by_purpose || {};
+  const chips = Object.keys(bp).map(k => '<span class="chipx">' + esc(k) +
+    ' <b>' + bp[k].count + '</b>' + (bp[k].retried ? ' · 改写 ' + bp[k].retried : '') +
+    (bp[k].llm_used ? ' · LLM ' + bp[k].llm_used : '') + '</span>').join('');
+  const recent = (r.recent || []).map(x => '<div class="item"><div class="time">' + clockAt(x.created_at) + '</div>' +
+    '<div class="body"><div class="t">' + (x.issues && x.issues.length
+      ? '<span style="color:#ff8f8f">' + esc(x.issues.join(' / ')) + '</span>'
+      : '<span style="color:#5fe0a0">通过</span>') +
+    ' · ' + esc(x.purpose) + (x.retried ? ' · 已打回重写' : '') + '</div>' +
+    '<div class="s">' + esc(String(x.final || '').slice(0, 90)) + '</div></div></div>').join('');
+  $('#review-panel').innerHTML =
+    '<div class="trace-stats" style="margin-bottom:10px">' +
+    '<span class="ts on">模式 <b>' + esc(modeLabel) + '</b></span>' +
+    '<span class="ts">近24h 审稿 <b>' + (r.total_24h || 0) + '</b></span>' +
+    '<span class="ts">发现问题 <b>' + (r.flagged_24h || 0) + '</b></span>' +
+    '<span class="ts">今日 LLM 调用 <b>' + (r.calls_today || 0) + '</b> / ' + (r.max_per_day || '∞') + '</span>' +
+    '<span class="ts">走 LLM 的用途 <b>' + esc((r.llm_purposes || []).join(' / ') || '—') + '</b></span></div>' +
+    '<div class="trace" style="margin-bottom:8px">' + (chips || '<span class="chipx">近 24h 还没有出过门的话</span>') + '</div>' +
+    '<div class="list">' + (recent || '<div class="empty">还没有审稿记录</div>') + '</div>';
+}
+function renderGroups() {
+  const groups = DATA.groups || [];
+  $('#groups').innerHTML = groups.length ? groups.map(g => '<div class="group-card"><div class="gh"><div class="avatar">群</div><div><div class="name">' + esc(g.label || g.room) + '</div><div class="room">' + esc(g.room) + (g.last ? ' · 最近 ' + clockAt(g.last, true) : '') + '</div></div></div>' +
+    '<div class="stats"><div><b>' + (g.people||[]).length + '</b><span>人物</span></div><div><b>' + g.messages + '</b><span>消息</span></div><div><b>' + g.memories + '</b><span>记忆</span></div></div>' +
+    '<div class="person-chips">' + (g.people||[]).map(p => '<span class="chip">' + esc(p.name || p.wxid) + '</span>').join('') + '</div></div>').join('') : '<div class="empty">暂无群 Agent 数据</div>';
+}
+function renderAll() {
+  if (!DATA) return;
+  $('#clock').textContent = DATA.time || '';
+  $('#health').textContent = '在线';
+  renderOverview(); renderPeople(); renderMemory(); renderLogs(); renderParams(); renderGroups(); renderReview();
+}
+async function refresh() {
+  try { DATA = await api('/console-data'); renderAll(); }
+  catch (e) { $('#health').textContent = '离线 / ' + e.message; }
+}
+function show(v) {
+  view = v; $$('.view').forEach(x => x.classList.toggle('active', x.id === 'v-' + v));
+  if (location.hash !== '#' + v) history.replaceState(null, '', '#' + v);
+  $$('nav button').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+  if (v === 'trajectory') refreshTrajectory();
+  const titles = {overview:['总览','状态、关系和生活轨迹'],trajectory:['会话轨迹','消息 / 结构化思考 / 工具调用'],people:['人物卡','她认识的每个人'],memory:['记忆','她记得什么、关于谁'],logs:['主动日志','她为什么开口'],params:['参数','运行中的引擎配置'],groups:['群 Agent','每个群独立的她']};
+  $('#title').textContent = titles[v][0]; $('#subtitle').textContent = titles[v][1];
+}
+$$('nav button').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
+$('#traj-window').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  TRAJ_WINDOW = Number(b.dataset.win) || 0;
+  $$('#traj-window button').forEach(x => x.classList.toggle('on', x === b));
+  if (TRAJ) renderTrajectory();
+});
+$('#traj-search').addEventListener('input', () => { if (TRAJ) renderTrajectory(); });
+$('#drawer-close').addEventListener('click', () => $('#traj-drawer').classList.remove('open'));
+$('#traj-axes').addEventListener('click', e => {
+  const t = e.target.closest('[data-toggle]');
+  if (t) {
+    const id = t.dataset.toggle;
+    if (TRAJ_OFF.has(id)) TRAJ_OFF.delete(id); else TRAJ_OFF.add(id);
+    renderTrajectory(); return;
+  }
+  const b = e.target.closest('.ablk');
+  if (b && b.dataset.round) jumpRound(b.dataset.round);
+});
+$('#refresh').addEventListener('click', refresh);
+$('#auto').addEventListener('click', () => { AUTO = !AUTO; $('#auto').textContent = '自动刷新: ' + (AUTO ? '开' : '关'); });
+refresh();
+if (location.hash && document.getElementById('v-' + location.hash.slice(1))) show(location.hash.slice(1));
+setInterval(() => { if (AUTO && !document.hidden) { refresh(); if (view === 'trajectory') refreshTrajectory(); } }, 5000);
+</script>
+</body>
+</html>

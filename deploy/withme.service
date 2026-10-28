@@ -1,0 +1,29 @@
+# systemd 部署示例（Linux 服务器）：
+#   sudo useradd -m withme && sudo mkdir -p /opt/withme
+#   把整个仓库拷到 /opt/withme，然后：
+#   sudo cp deploy/withme.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now withme
+# 日志：journalctl -u withme -f
+#
+# 安全：对外暴露请保留 AGENT_API_TOKEN，并用 nginx/caddy 反代加 HTTPS；
+# 仅本机使用则 --host 127.0.0.1 即可，令牌可省。
+[Unit]
+Description=WithMe 拟人化主动智能体
+After=network-online.target
+
+[Service]
+Type=simple
+User=withme
+WorkingDirectory=/opt/withme
+Environment=AGENT_API_TOKEN=please-change-me
+# 接真实 LLM（不改配置文件的部署方式）：
+# Environment=AGENT_LLM_PROVIDER=openai_compatible
+# Environment=AGENT_LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+# Environment=AGENT_LLM_MODEL=glm-4-flash
+# Environment=LLM_API_KEY=sk-xxxx
+ExecStart=/usr/bin/python3 -m src.main serve --host 127.0.0.1 --port 8787 --interval 60
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

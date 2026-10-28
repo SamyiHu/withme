@@ -1,0 +1,43 @@
+# 运行时数据与本地隐私（绝不入库）
+data/
+logs/
+wechatauto_logs/
+reports/drift_run.*
+*.db
+*.db-wal
+*.db-shm
+
+# 密钥与本机生成的启动脚本（含 API key）
+.env
+.open-source-banned.txt
+deploy/withme_env.bat
+deploy/start_withme.bat
+deploy/start_hidden.vbs
+
+# 网页客户端（聊天 + 控制台）随开源版发布
+
+__pycache__/
+*.pyc
+.pytest_cache/
+Thumbs.db
+tools/silk_node/node_modules/
+%SystemDrive%/
+
+# 论文/投稿材料（不随开源版发布）
+reports/paper.md
+reports/paper.docx
+reports/paper.pdf
+reports/paper_print.html
+reports/human_eval_*/
+reports/cross_model_drift.*
+reports/longmemeval_eval*
+reports/memory_paired_eval.*
+reports/security_redteam.*
+reports/user_study/
+docs/handoff_prompt_*.md
+docs/human_eval_*.md
+docs/publication_action_plan.md
+
+# 本地配置（首次运行自动从 *.example.yaml 生成；填了真实 wxid/key 后不要提交）
+config/config.yaml
+config/persona.yaml

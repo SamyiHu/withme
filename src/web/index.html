@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小满 · WithMe</title>
+<style>
+  :root{--bg:#080a0f;--panel:rgba(20,24,34,.88);--line:rgba(255,255,255,.08);
+        --text:#e8eaf2;--dim:#8b93a7;--faint:#5c6477;--accent:#6f9cff;
+        --me:#3f69d8;--good:#5fe0a0;--warn:#f3b55c}
+  *{box-sizing:border-box}html,body{height:100%}
+  body{margin:0;background:radial-gradient(900px 500px at 80% -10%,rgba(111,156,255,.12),transparent 60%),
+        radial-gradient(700px 500px at 0 100%,rgba(156,123,255,.08),transparent 60%),var(--bg);
+        color:var(--text);font:15px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+        display:flex;min-height:100vh}
+  aside.rail{width:74px;flex:none;border-right:1px solid var(--line);background:rgba(12,15,22,.85);
+        display:flex;flex-direction:column;align-items:center;padding:18px 0;gap:10px;position:sticky;top:0;height:100vh}
+  .logo{width:40px;height:40px;border-radius:13px;background:linear-gradient(135deg,#6f9cff,#9c7bff);
+        display:grid;place-items:center;color:#08101d;font-weight:800;font-size:16px;margin-bottom:14px}
+  .rail a,.rail button{width:44px;height:44px;border-radius:13px;display:grid;place-items:center;
+        color:var(--dim);text-decoration:none;border:0;background:transparent;cursor:pointer;font-size:17px}
+  .rail a:hover,.rail button:hover{background:rgba(255,255,255,.055);color:#fff}
+  .rail .active{background:rgba(111,156,255,.15);color:#fff;box-shadow:inset 0 0 0 1px rgba(111,156,255,.2)}
+  .rail .spacer{flex:1}
+  .rail .status-dot{width:8px;height:8px;border-radius:50%;background:var(--good);box-shadow:0 0 12px var(--good)}
+  .shell{flex:1;min-width:0;display:flex;min-height:100vh}
+  .chat-col{flex:1;min-width:0;display:flex;flex-direction:column}
+  header.chat-head{display:flex;align-items:center;gap:12px;padding:18px 24px;border-bottom:1px solid var(--line);
+        background:rgba(10,13,19,.55);backdrop-filter:blur(12px);position:sticky;top:0;z-index:4}
+  .avatar{width:38px;height:38px;border-radius:13px;background:linear-gradient(135deg,rgba(111,156,255,.3),rgba(156,123,255,.2));
+        display:grid;place-items:center;font-weight:700;color:#dce6ff}
+  .chat-head .who{flex:1}.chat-head .name{font-weight:700}.chat-head .sub{font-size:11px;color:var(--faint)}
+  .pill{border:1px solid var(--line);border-radius:99px;padding:4px 10px;font-size:11px;color:var(--dim);
+        background:rgba(255,255,255,.025);white-space:nowrap}
+  main#chat{flex:1;overflow-y:auto;padding:26px 28px 18px;display:flex;flex-direction:column;gap:4px}
+  .row{display:flex;gap:9px;align-items:flex-end;margin:7px 0}
+  .row.user{justify-content:flex-end}
+  .bubble{max-width:min(72%,680px);padding:9px 13px;border-radius:13px;white-space:pre-wrap;word-break:break-word;
+        font-size:14px;line-height:1.65}
+  .agent .bubble{background:rgba(24,29,41,.95);border:1px solid var(--line);border-bottom-left-radius:4px}
+  .user .bubble{background:linear-gradient(135deg,#3f69d8,#5b83e8);color:#fff;border-bottom-right-radius:4px}
+  .msg-meta{font-size:10px;color:var(--faint);margin:2px 0 2px 45px}
+  .msg-meta.user{text-align:right;margin:2px 6px 2px 0}
+  .pro-tag{display:inline-block;font-size:9px;color:#f0c674;border:1px solid rgba(243,181,92,.25);
+        background:rgba(243,181,92,.08);border-radius:99px;padding:1px 7px;margin-bottom:3px}
+  form#f{display:flex;gap:10px;padding:14px 24px 18px;border-top:1px solid var(--line);
+        background:rgba(12,15,22,.8);position:sticky;bottom:0}
+  #msg{flex:1;background:#0c1017;border:1px solid var(--line);border-radius:12px;color:var(--text);
+        padding:11px 14px;font:inherit;outline:none}
+  #msg:focus{border-color:rgba(111,156,255,.6);box-shadow:0 0 0 3px rgba(111,156,255,.08)}
+  #send{border:0;border-radius:12px;background:linear-gradient(135deg,#6f9cff,#9c7bff);color:#07101c;
+        font-weight:700;padding:0 20px;cursor:pointer}
+  #send:disabled{opacity:.45;cursor:default}
+  aside.context{width:300px;flex:none;border-left:1px solid var(--line);padding:20px 16px;
+        background:rgba(12,15,22,.55);display:flex;flex-direction:column;gap:14px;height:100vh;overflow-y:auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+  .card h3{margin:0 0 10px;font-size:11px;color:var(--dim);font-weight:500;letter-spacing:.08em;text-transform:uppercase}
+  .bar-row{display:grid;grid-template-columns:72px 1fr 36px;gap:7px;align-items:center;padding:3px 0}
+  .bar-label{font-size:10px;color:var(--faint)}
+  .track{display:block;height:5px;background:#070a10;border-radius:99px;overflow:hidden}
+  .fill{display:block;height:100%;background:linear-gradient(90deg,#4c79e8,#83a9ff);border-radius:99px}
+  .num{text-align:right;font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .ctx-person{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+  .ctx-person .avatar{width:32px;height:32px;border-radius:10px;font-size:13px}
+  .ctx-person .name{font-size:13px;font-weight:600}.ctx-person .id{font-size:9px;color:var(--faint)}
+  .mini{font-size:10px;color:var(--faint);line-height:1.7}
+  .console-link{display:flex;align-items:center;justify-content:space-between;text-decoration:none;color:var(--dim);
+        border:1px solid var(--line);border-radius:10px;padding:9px 11px;font-size:11px;background:rgba(255,255,255,.02)}
+  .console-link:hover{color:#fff;border-color:var(--accent)}
+  #toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);background:rgba(20,26,38,.95);
+        border:1px solid var(--line);border-radius:9px;padding:6px 12px;font-size:11px;color:var(--dim);display:none;z-index:20}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;z-index:30;overflow-y:auto}
+  .modal.open{display:block}.sheet{max-width:620px;margin:6vh auto;background:#141922;border:1px solid var(--line);
+        border-radius:16px;padding:22px}.sheet h2{margin:0 0 14px;font-size:15px}
+  .field{margin:10px 0}.field label{display:block;font-size:11px;color:var(--dim);margin-bottom:4px}
+  .field input,.field textarea,.field select{width:100%;background:#0b0f16;border:1px solid var(--line);
+        border-radius:8px;color:var(--text);padding:8px 10px;font:inherit;font-size:12px}
+  .field textarea{min-height:60px;resize:vertical}.switch{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);margin:8px 0}
+  .btns{display:flex;gap:9px;margin-top:16px}.btns button{flex:1;border:1px solid var(--line);border-radius:9px;
+        padding:9px;background:#1b2130;color:var(--text);cursor:pointer}.btns .save{background:linear-gradient(135deg,#6f9cff,#9c7bff);color:#07101c;font-weight:700;border:0}
+  @media(max-width:900px){aside.context{display:none}.bubble{max-width:88%}main#chat{padding:18px 14px}header.chat-head{padding:14px 16px}}
+</style>
+</head>
+<body>
+<aside class="rail">
+  <div class="logo">W</div>
+  <a class="active" href="/" title="聊天">◈</a>
+  <a href="/console" title="控制台">◉</a>
+  <button id="settings-open" title="设置">⚙</button>
+  <div class="spacer"></div>
+  <span class="status-dot" id="dot" title="在线"></span>
+</aside>
+<div class="shell">
+  <section class="chat-col">
+    <header class="chat-head">
+      <div class="avatar">N</div>
+      <div class="who"><div class="name">小满</div><div class="sub" id="chat-sub">连接中…</div></div>
+      <span class="pill" id="state-pill">—</span>
+    </header>
+    <main id="chat"></main>
+    <form id="f"><input id="msg" placeholder="说点什么…" autocomplete="off" autofocus><button id="send">送出</button></form>
+  </section>
+  <aside class="context">
+    <div class="card"><h3>当前状态</h3><div id="rail-state"></div><div class="mini" id="rail-meta"></div></div>
+    <div class="card"><h3>创造者</h3><div id="rail-creator"></div></div>
+    <div class="card"><h3>记忆 / 今日主动</h3><div class="mini" id="rail-memory"></div></div>
+    <a class="console-link" href="/console" target="_blank"><span>打开后台控制台</span><span>↗</span></a>
+  </aside>
+</div>
+<div id="toast"></div>
+<div class="modal" id="settings">
+  <div class="sheet">
+    <h2>设置</h2>
+    <div class="field"><label>访问令牌（可选）</label><input id="s-token" placeholder="Bearer token"></div>
+    <div class="switch"><input type="checkbox" id="s-pro"> 主动行为总开关</div>
+    <div class="field"><label>免打扰（如 23:00-08:00，逗号分隔）</label><input id="s-quiet"></div>
+    <div class="field"><label>模型</label><input id="s-model"></div>
+    <div class="field"><label>API 地址</label><input id="s-base"></div>
+    <div class="field"><label>API Key（留空不变）</label><input id="s-key" placeholder="sk-..."></div>
+    <div class="field"><label>记忆后端</label><input id="s-mem"></div>
+    <div class="switch"><input type="checkbox" id="s-perc"> LLM 意图揣摩</div>
+    <div class="btns"><button id="settings-cancel">取消</button><button class="save" id="settings-save">保存</button></div>
+  </div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pct = v => Math.max(0, Math.min(100, (Number(v)||0)*100));
+let afterId = 0, DATA = null;
+function headers(){const h={"Content-Type":"application/json"};const t=localStorage.getItem("wm_token");if(t)h["Authorization"]="Bearer "+t;return h;}
+async function api(path, opts={}){const r=await fetch(path,Object.assign({headers:headers()},opts));if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}
+function toast(t){$("#toast").textContent=t;$("#toast").style.display="block";clearTimeout(window._tt);window._tt=setTimeout(()=>$("#toast").style.display="none",1800);}
+function time(ts){return new Date((ts||Date.now()/1000)*1000).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"});}
+function add(m){
+  const row=document.createElement("div");row.className="row "+(m.sender==="user"?"user":"agent");
+  if(m.sender!=="user"){const av=document.createElement("div");av.className="avatar";av.style.width="30px";av.style.height="30px";av.style.fontSize="12px";av.textContent="N";row.appendChild(av);}
+  const b=document.createElement("div");b.className="bubble";
+  const p=m.meta&&m.meta.proactive;
+  if(p){const tag=document.createElement("span");tag.className="pro-tag";tag.textContent="主动 · "+(p.intent||"");b.appendChild(tag);}
+  b.appendChild(document.createTextNode(m.content||""));
+  row.appendChild(b);$("#chat").appendChild(row);
+  const meta=document.createElement("div");meta.className="msg-meta "+(m.sender==="user"?"user":"");meta.textContent=time(m.created_at);$("#chat").appendChild(meta);
+  $("#chat").scrollTop=$("#chat").scrollHeight;
+}
+async function loadHistory(){
+  try{const d=await api("/messages?limit=100");(d.items||[]).forEach(add);afterId=(d.items&&d.items.length)?d.items[d.items.length-1].id:0;}catch(e){toast("加载历史失败："+e.message);}
+}
+async function poll(){
+  try{const d=await api("/pending?after_id="+afterId);(d.items||[]).forEach(add);if(d.items&&d.items.length)afterId=d.items[d.items.length-1].id;}catch(e){}
+}
+async function refreshRail(){
+  try{
+    DATA=await api("/console-data");
+    const st=DATA.status||{}, sv=st.state_vector||{};
+    $("#state-pill").textContent=(st.proactive_enabled?"主动开":"主动关")+" · "+(st.permission_level||"—");
+    $("#chat-sub").textContent=(DATA.config&&DATA.config.llm&&DATA.config.llm.model)||"在线";
+    $("#dot").style.background="#5fe0a0";
+    $("#rail-state").innerHTML=Object.keys(sv).map(k=>'<div class="bar-row"><span class="bar-label">'+esc(k)+'</span><span class="track"><span class="fill" style="width:'+pct(sv[k])+'%"></span></span><span class="num">'+Number(sv[k]).toFixed(2)+'</span></div>').join("");
+    $("#rail-meta").textContent="距吸引子 "+(st.attractor_distance??"—")+" · 一致性 "+(st.consistency??"—");
+    const p=(DATA.people||[]).find(x=>x.kind==="creator")||(DATA.people||[])[0];
+    if(p){$("#rail-creator").innerHTML='<div class="ctx-person"><div class="avatar">'+esc((p.name||"?").slice(0,1))+'</div><div><div class="name">'+esc(p.name||p.wxid)+'</div><div class="id">'+esc(p.wxid)+'</div></div></div><div class="mini">亲近 '+Number(p.affinity||0).toFixed(2)+' · 信任 '+Number(p.trust_benevolence||0).toFixed(2)+' · 可披露 '+Number(p.trust_disclosure||0).toFixed(2)+'</div>';}
+    $("#rail-memory").innerHTML="记忆 "+(DATA.memory&&DATA.memory.total||0)+" 条<br>消息 "+(DATA.messages||0)+" 条<br>今日主动 "+JSON.stringify(st.active_today||{}).replace(/[{}"]/g,"");
+  }catch(e){$("#dot").style.background="#ff6b7a";$("#chat-sub").textContent="离线 / "+e.message;}
+}
+async function send(e){
+  e.preventDefault();const text=$("#msg").value.trim();if(!text)return;$("#msg").value="";add({sender:"user",content:text,created_at:Date.now()/1000});$("#send").disabled=true;
+  try{const d=await api("/chat",{method:"POST",body:JSON.stringify({text})});if(d.addon)add({sender:"agent",content:d.addon,created_at:Date.now()/1000,meta:{proactive:d.addon_meta}});if(d.reply)add({sender:"agent",content:d.reply,created_at:Date.now()/1000});afterId=Math.max(afterId,(d.meta&&d.meta.message_id)||afterId);}catch(err){toast("发送失败："+err.message);}finally{$("#send").disabled=false;$("#msg").focus();}
+}
+$("#f").addEventListener("submit",send);
+async function openSettings(){
+  try{const s=await api("/settings");$("#s-pro").checked=s.proactive.enabled;$("#s-quiet").value=(s.quiet_hours||[]).join(", ");$("#s-model").value=s.llm.model||"";$("#s-base").value=s.llm.base_url||"";$("#s-mem").value=s.memory.provider||"";$("#s-perc").checked=s.perception.enabled;$("#s-token").value=localStorage.getItem("wm_token")||"";$("#settings").classList.add("open");}catch(e){toast("读取设置失败："+e.message);}
+}
+async function saveSettings(){
+  const tok=$("#s-token").value.trim();if(tok)localStorage.setItem("wm_token",tok);else localStorage.removeItem("wm_token");
+  const quiet=$("#s-quiet").value.split(/[,，]/).map(x=>x.trim()).filter(Boolean);
+  const payload={proactive:{enabled:$("#s-pro").checked},quiet_hours:quiet,llm:{model:$("#s-model").value.trim(),base_url:$("#s-base").value.trim()},memory:{provider:$("#s-mem").value.trim()},perception:{enabled:$("#s-perc").checked}};
+  if($("#s-key").value.trim())payload.llm.api_key=$("#s-key").value.trim();
+  try{await api("/settings",{method:"PUT",body:JSON.stringify(payload)});toast("已保存");$("#settings").classList.remove("open");}catch(e){toast("保存失败："+e.message);}
+}
+$("#settings-open").addEventListener("click",openSettings);
+$("#settings-cancel").addEventListener("click",()=>$("#settings").classList.remove("open"));
+$("#settings-save").addEventListener("click",saveSettings);
+$("#settings").addEventListener("click",e=>{if(e.target.id==="settings")e.target.classList.remove("open");});
+loadHistory().then(poll).then(refreshRail);
+setInterval(poll,5000);setInterval(refreshRail,10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+# withme 开源导出排除清单（tools/export_open_source.py 逐条匹配，路径相对仓库根）
+# 导出文件全集 = git 跟踪文件，未跟踪的运行产物天然不会进入导出包。
+
+# ---- 隐私与运行时数据（绝不发布）----
+data/
+logs/
+wechatauto_logs/
+.env
+*.db
+*.db-wal
+*.db-shm
+
+# ---- 真实配置（含个人 wxid/创造者信息；开源包只带 *.example.yaml 模板）----
+config/config.yaml
+config/persona.yaml
+
+# ---- 论文/投稿材料与实验报告（不随开源版发布）----
+reports/
+docs/handoff_prompt_*.md
+docs/human_eval_*.md
+docs/publication_action_plan.md
+tools/human_eval*.py
+tools/make_paper_figs.py
+tools/benchmarks/
+tools/push_api.py
+
+# ---- 本机专用部署脚本（含机器路径）----
+deploy/withme_env.bat
+deploy/start_withme.bat
+deploy/start_hidden.vbs
+deploy/wechat_bot.bat
+deploy/wechat_bot.vbs
+
+# ---- 杂项 ----
+__pycache__/
+*.pyc
+.pytest_cache/
+Thumbs.db
+tools/silk_node/node_modules/
