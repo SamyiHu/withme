@@ -17,6 +17,7 @@
 
 import argparse
 import fnmatch
+import os
 import re
 import shutil
 import subprocess
@@ -176,7 +177,15 @@ def main():
                 sys.exit(f"[拒绝] {f} 属于 {d}——检查 .open-source-exclude")
 
     if out.exists():
-        shutil.rmtree(out)
+        # 快照目录可能被 git init 过（当作公开仓工作副本用），.git 对象文件在
+        # Windows 上是只读的，rmtree 会 PermissionError——先去只读位再删
+        import stat
+
+        def _force_rm(func, path, _exc):
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+
+        shutil.rmtree(out, onerror=_force_rm)
     copied = 0
     for f in files:
         dst = out / f

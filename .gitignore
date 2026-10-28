@@ -38,6 +38,6 @@ docs/handoff_prompt_*.md
 docs/human_eval_*.md
 docs/publication_action_plan.md
 
-# 本地配置（首次运行自动从 *.example.yaml 生成；填了真实 wxid/key 后不要提交）
+# 本地配置（首次运行自动从 *.example.yaml 生成；开源版用户填真实值后不误提交）
 config/config.yaml
 config/persona.yaml
