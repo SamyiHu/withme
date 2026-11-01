@@ -9,7 +9,8 @@ from common import make_tmpdir, rmtree, run_tests
 
 from src.llm_client import MockLLMClient
 from src.main import Agent
-from src.storage import get_setting
+from src.state_dims import DIMS
+from src.storage import get_setting, set_setting
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -47,50 +48,116 @@ def test_reflection_applies_and_persists():
         result = agent.maybe_reflect(force=True)
         assert result["ran"], result
         a = result["applied"]
-        assert a["insights"] and a["new_rule"] and a["trait_shift"] == {"care": -0.05}
+        assert a["insights"] and a["new_rule"]
+        assert a["growth"]["n"] > 0
         # 洞察成为可检索的 reflection 记忆
         assert any(m["type"] == "reflection" and "赶项目" in m["content"]
                    for m in agent.memory.retrieve("xiaoman", "项目 压力", 5, 0.3))
-        # 规则进入聊天习惯
-        assert "项目忙的时候少提健身目标" in agent.persona.style["chat_rules"]
-        # 漂移生效：care 中心 0.7 -> 0.65
+        # 规则只进 growth_rules（单一来源），不再混写聊天习惯
+        assert get_setting(agent.conn, "growth_rules") == ["项目忙的时候少提健身目标"]
+        assert "项目忙的时候少提健身目标" not in agent.persona.style.get("chat_rules", []), \
+            "成长规则不得同时写进 chat_rules（否则提示词里会出现两次）"
+        # 外环生效：中心 = 角色卡 + p，且 p 在包络内
+        state = get_setting(agent.conn, "growth_state")
+        assert state and state["n"] > 0
         centers = {e.state_name: e.center for e in agent.persona.attractor}
-        assert abs(centers["care"] - 0.65) < 1e-9
+        for dim in DIMS:
+            assert abs(centers[dim] - (agent._base_centers[dim] + state["p"][dim])) < 1e-9
+            assert abs(state["p"][dim]) <= agent.config.reflection.growth_envelope + 1e-9
         # 审计行
         assert agent.conn.execute("SELECT COUNT(*) c FROM reflections").fetchone()["c"] == 1
         # 持久化：同库新 Agent 恢复漂移
         agent2 = _agent(tmp)
         centers2 = {e.state_name: e.center for e in agent2.persona.attractor}
-        assert abs(centers2["care"] - 0.65) < 1e-9
+        for dim in DIMS:
+            assert abs(centers2[dim] - (agent._base_centers[dim] + state["p"][dim])) < 1e-9
     finally:
         rmtree(tmp)
 
 
-def test_drift_step_and_total_caps():
+def test_growth_envelope_caps_centers():
     tmp = make_tmpdir()
     try:
-        # 每次提议 +0.10：单步封顶 0.05；累计封顶 0.15
-        agent = _agent(tmp, [_out(shift={"care": 0.10})] * 5)
-        for _ in range(5):
+        # 反复提议 +0.10：旧实现累计封顶 0.15；新外环按包络封顶，且步长饱和
+        agent = _agent(tmp, [_out(shift={"care": 0.10})] * 40)
+        for _ in range(40):
             agent.maybe_reflect(force=True)
-        drift = get_setting(agent.conn, "attractor_drift")
-        assert abs(drift["care"] - 0.15) < 1e-9, drift
+        state = get_setting(agent.conn, "growth_state")
+        env = agent.config.reflection.growth_envelope
+        assert all(abs(v) <= env + 1e-9 for v in state["p"].values()), state["p"]
         centers = {e.state_name: e.center for e in agent.persona.attractor}
-        assert abs(centers["care"] - (0.7 + 0.15)) < 1e-9
+        assert centers["care"] <= agent._base_centers["care"] + env + 1e-9
+        assert centers["care"] >= agent._base_centers["care"] - env - 1e-9
     finally:
         rmtree(tmp)
 
 
-def test_rule_growth_capped():
+def test_rule_growth_fifo():
+    """规则满了不丢弃新规则：淘汰最旧的一条（旧实现到 2 条后静默丢弃，
+    规则线就此冻结——2026-10-27 起连续 4 次反思的新规则全部没生效）。"""
     tmp = make_tmpdir()
     try:
         agent = _agent(tmp, [_out(new_rule="规则A"), _out(new_rule="规则B"),
-                             _out(new_rule="规则C")])
-        for _ in range(3):
-            agent.maybe_reflect(force=True)
-        rules = agent.persona.style["chat_rules"]
-        assert "规则A" in rules and "规则B" in rules and "规则C" not in rules
-        assert len(get_setting(agent.conn, "growth_rules")) == 2
+                             _out(new_rule="规则C"), _out(new_rule="规则D")])
+        results = [agent.maybe_reflect(force=True) for _ in range(4)]
+        growth = get_setting(agent.conn, "growth_rules")
+        assert growth == ["规则B", "规则C", "规则D"], growth
+        assert results[-1]["applied"].get("new_rule_replaced") == "规则A"
+        assert "规则A" not in agent.persona.style.get("chat_rules", [])
+    finally:
+        rmtree(tmp)
+
+
+def test_max_extra_rules_configurable():
+    """规则上限可在控制台/接口调整，非法值被拒。"""
+    tmp = make_tmpdir()
+    try:
+        agent = _agent(tmp)
+        agent.apply_config({"reflection": {"max_extra_rules": 5}})
+        assert agent.config.reflection.max_extra_rules == 5
+        # 同一处 num() 曾把 payload 当 config 传，审核数字参数也没生效；一并守住
+        agent.apply_config({"reviewer": {"max_tokens": 120}})
+        assert agent.config.reviewer.max_tokens == 120
+        try:
+            agent.apply_config({"reflection": {"max_extra_rules": 0}})
+            raise AssertionError("应拒绝 0 条")
+        except ValueError:
+            pass
+    finally:
+        rmtree(tmp)
+
+
+def test_growth_rules_single_section_in_prompt():
+    """成长规则只出现在【成长规则】段：写入侧封顶后，提示词不再二次截断。"""
+    tmp = make_tmpdir()
+    try:
+        agent = _agent(tmp)
+        rules = ["规则1", "规则2", "规则3", "规则4"]
+        bp = agent.builder.build(
+            intent="respond", source=None,
+            state_vector=dict(agent.persona.baseline_state),
+            relation_state={"affinity": 0.5, "trust": 0.5, "familiarity": 0.3,
+                            "boundaries": [], "recent_active_effect": "尚无记录"},
+            memories=[], open_intents=[], permission_level="L1",
+            last_active_effect="尚无记录", growth_rules=rules, now=1000.0)
+        assert bp["成长规则"] == rules
+        assert not any(r in bp["表达风格"]["聊天习惯"] for r in rules), \
+            "成长规则不得同时混进聊天习惯（会重复占提示词）"
+    finally:
+        rmtree(tmp)
+
+
+def test_legacy_growth_rules_stripped_from_style():
+    """老数据里规则同时存在 growth_rules 和 persona_style.chat_rules：
+    启动时剥掉后者，避免提示词重复、也让手工删除能生效。"""
+    tmp = make_tmpdir()
+    try:
+        agent = _agent(tmp)
+        set_setting(agent.conn, "growth_rules", ["老规则"])
+        set_setting(agent.conn, "persona_style", {"chat_rules": ["老规则", "手写规则"]})
+        agent2 = _agent(tmp)
+        assert agent2.persona.style.get("chat_rules") == ["手写规则"]
+        assert get_setting(agent2.conn, "persona_style")["chat_rules"] == ["手写规则"]
     finally:
         rmtree(tmp)
 
@@ -133,9 +200,13 @@ def test_reset_growth():
     try:
         agent = _agent(tmp, [_out(new_rule="临时规则", shift={"valence": -0.1})])
         agent.maybe_reflect(force=True)
-        assert agent.persona.style["chat_rules"][-1] == "临时规则"
+        assert get_setting(agent.conn, "growth_rules") == ["临时规则"]
         agent.apply_settings({"growth": {"reset": True}})
-        assert "临时规则" not in agent.persona.style["chat_rules"]
+        assert not get_setting(agent.conn, "growth_rules")
+        assert "临时规则" not in agent.persona.style.get("chat_rules", [])
+        state = get_setting(agent.conn, "growth_state")
+        assert state["p"] == {d: 0.0 for d in DIMS}
+        assert state["n"] == 0
         centers = {e.state_name: e.center for e in agent.persona.attractor}
         assert abs(centers["valence"] - agent._base_centers["valence"]) < 1e-9
     finally:

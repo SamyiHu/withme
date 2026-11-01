@@ -133,7 +133,8 @@
   .trace-stats{display:flex;gap:6px;flex-wrap:wrap}
   .ts{font-size:10px;color:var(--faint);border:1px solid var(--line);border-radius:7px;padding:4px 8px;background:rgba(255,255,255,.02)}
   .ts b{color:var(--text);font-weight:600}.ts.on{border-color:rgba(111,156,255,.35);color:var(--accent)}
-  #traj-search{margin-left:auto;width:230px;background:#0b0f16;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:7px 10px;font:inherit;font-size:11px}
+  #traj-search{width:190px;background:#0b0f16;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:7px 10px;font:inherit;font-size:11px}
+  #traj-session{min-width:150px;max-width:210px;background:#0b0f16;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:7px 9px;font:inherit;font-size:11px}
   /* ---- 会话轨迹：每个会话一根真实时间轴（绝对时间摆位，不是等距示意） ---- */
   .traj-tools{display:flex;align-items:center;gap:10px;margin-left:auto}
   .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:rgba(255,255,255,.02)}
@@ -201,6 +202,19 @@
   .trace{margin-top:6px;display:flex;flex-wrap:wrap;gap:5px;align-items:flex-start}
   .chipx{font-size:10px;color:var(--dim);background:rgba(255,255,255,.035);border:1px solid var(--line);border-radius:7px;padding:3px 7px}
   .chipx b{color:var(--text);font-weight:500}
+  .prompt-box{background:#090c12;border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+              font:11px/1.6 ui-monospace,Consolas,monospace;color:var(--dim);white-space:pre-wrap;
+              word-break:break-word;max-height:340px;overflow:auto}
+  .prompt-sec{border-top:1px dashed rgba(255,255,255,.07);padding:6px 0}
+  .prompt-sec summary{cursor:pointer;color:var(--dim);font-size:11px;margin-bottom:4px}
+  .prompt-kv{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px}
+  .pe-input{width:100%;background:#0b0f16;border:1px solid var(--line);border-radius:8px;color:var(--text);
+            padding:7px 9px;font:inherit;font-size:11px;resize:vertical;margin-top:2px}
+  #prompt-edit .prompt-kv input.pe-num{width:74px;background:#0b0f16;border:1px solid var(--line);
+            border-radius:6px;color:var(--text);padding:3px 6px;font:inherit;font-size:11px;margin-left:4px}
+  #prompt-edit table input{width:84px;background:#0b0f16;border:1px solid var(--line);border-radius:6px;
+            color:var(--text);padding:3px 6px;font:inherit;font-size:11px}
+  .dsec{margin-bottom:14px}
   .trace pre{flex:1;min-width:100%;margin-top:3px;background:#090c12;border:1px solid var(--line);border-radius:7px;padding:7px;color:var(--dim);font:10px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap}
   .groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
   .group-card{background:linear-gradient(150deg,rgba(22,27,39,.95),rgba(11,15,22,.95));border:1px solid var(--line);
@@ -222,6 +236,215 @@
   }
   @media(max-width:620px){.top{align-items:flex-start;flex-wrap:wrap}.top .right{margin-left:0}
     .radar-wrap{flex-direction:column}.radar{width:230px;height:230px}.config-grid{grid-template-columns:repeat(12,minmax(0,1fr))}.conf{grid-column:span 12}}
+
+  /* ================= UI v2：表单 / 编辑器 / 统一控件 ================= */
+  .card{padding:20px 20px 18px}
+  .card h2{font-size:14px;margin-bottom:16px}
+  .card h2 .hint{font-size:10px;margin-left:8px}
+  .btn{font-size:12px;padding:8px 14px;border-radius:10px;line-height:1.2}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn:disabled:hover{border-color:var(--line2);background:rgba(255,255,255,.04)}
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:10px;color:var(--faint);
+         border:1px solid var(--line);border-radius:99px;padding:3px 9px;background:rgba(255,255,255,.02)}
+  .badge.dirty{color:var(--warn);border-color:rgba(243,181,92,.4);background:rgba(243,181,92,.08)}
+  .params-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:-4px 0 16px}
+  .params-bar .spacer{flex:1}
+  .config-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+  .conf{grid-column:auto;display:flex;flex-direction:column;align-items:stretch;gap:6px;
+        padding:12px 13px 11px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(160deg,rgba(23,29,42,.72),rgba(12,16,24,.72))}
+  .conf .k{width:auto;color:#e9edf6;font-size:12px;font-weight:600;letter-spacing:.01em}
+  .conf .k .unit{color:var(--faint);font-weight:400;font-size:10px;margin-left:4px}
+  .conf .v{color:var(--text);font-size:12px;min-width:0}
+  .conf .hint{font-size:10px;color:var(--faint);line-height:1.55}
+  .conf input[type=number],.conf input[type=text],.conf select{width:100%;max-width:none;background:#0b0f16;
+        border:1px solid var(--line);border-radius:8px;color:var(--text);padding:8px 10px;font:inherit;font-size:12px}
+  .conf input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
+  .conf .row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim)}
+  .section-title{grid-column:1/-1;font-size:11px;letter-spacing:.14em;margin:10px 0 2px}
+  .field{display:flex;flex-direction:column;gap:6px;min-width:0}
+  .field label{font-size:12px;font-weight:600;color:#eef1f8}
+  .field .row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .field .hint{font-size:10px;color:var(--faint);line-height:1.55}
+  .field .counter{font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .field .counter.over{color:var(--bad)}
+  .field input,.field textarea,.field select{background:#0b0f16;border:1px solid var(--line);border-radius:9px;
+        color:var(--text);padding:9px 11px;font:inherit;font-size:12px;width:100%;min-width:0}
+  .field textarea{min-height:92px;line-height:1.65;resize:vertical}
+  .field input:focus,.field textarea:focus,.field select:focus,.conf input:focus,.conf select:focus{
+        border-color:var(--accent);outline:none;box-shadow:0 0 0 2px rgba(111,156,255,.16)}
+  .field.invalid input,.field.invalid textarea{border-color:rgba(255,107,122,.65)}
+  .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 18px}
+  .form-section{grid-column:1/-1;display:flex;align-items:center;gap:10px;margin:8px 0 0;
+        font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+  .form-section:after{content:"";flex:1;height:1px;background:var(--line)}
+  .editor-shell{border:1px solid var(--line2);border-radius:16px;background:linear-gradient(160deg,rgba(23,29,42,.92),rgba(9,13,20,.92));
+        padding:18px;margin:2px 0 18px;box-shadow:var(--shadow)}
+  .editor-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+  .editor-head .title{font-size:14px;font-weight:700;color:#fff}
+  .editor-head .sub{font-size:10px;color:var(--faint)}
+  .editor-head .spacer{flex:1}
+  .editor-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+  .editor-foot .spacer{flex:1}
+  .editor-foot .err{font-size:11px;color:#ff9aa5;max-width:520px;line-height:1.5}
+  .att-table{width:100%;border-collapse:separate;border-spacing:0 6px}
+  .att-table th{font-size:10px;color:var(--faint);text-align:left;padding:0 8px;font-weight:500}
+  .att-table td{background:rgba(255,255,255,.022);padding:7px 8px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .att-table td:first-child{border-left:1px solid var(--line);border-radius:10px 0 0 10px;color:var(--dim);font-size:11px;white-space:nowrap}
+  .att-table td:last-child{border-right:1px solid var(--line);border-radius:0 10px 10px 0}
+  .att-table input{width:100%;background:#0b0f16;border:1px solid var(--line);border-radius:7px;
+        color:var(--text);padding:6px 8px;font:inherit;font-size:11px}
+  .toast{position:fixed;right:22px;bottom:22px;z-index:95;max-width:420px;background:#101623;border:1px solid var(--line2);
+        border-radius:12px;padding:11px 15px;font-size:12px;color:var(--text);box-shadow:var(--shadow);
+        opacity:0;transform:translateY(10px);transition:.2s;pointer-events:none}
+  .toast.show{opacity:1;transform:none}
+  .toast.err{border-color:rgba(255,107,122,.5);color:#ffb6bd}
+  .toast.ok{border-color:rgba(95,224,160,.4);color:#bff3d8}
+  table{font-size:12px}
+  th{font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+  tbody tr:hover td{background:rgba(255,255,255,.025)}
+  .item .body .t{font-size:12.5px}
+  .te .bubble{font-size:12.5px}
+  @media(max-width:1250px){.config-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:860px){.config-grid,.form-grid{grid-template-columns:1fr}.editor-shell{padding:14px}}
+
+  /* ================= UI v2：整体观感 ================= */
+  .top{position:sticky;top:0;z-index:25;margin:-6px 0 18px;padding:10px 0 12px;
+       background:linear-gradient(180deg,rgba(8,10,15,.97),rgba(8,10,15,.82) 72%,rgba(8,10,15,0));
+       backdrop-filter:blur(8px)}
+  .top h1{font-size:24px}
+  ::selection{background:rgba(111,156,255,.32)}
+  button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{
+       outline:2px solid rgba(111,156,255,.55);outline-offset:2px}
+  .card{border-radius:18px}
+  .card h2{display:flex;align-items:baseline;gap:6px}
+  .kpi{border-radius:16px}
+  .kpi .value{font-size:24px}
+  .list .item{padding:11px 0}
+  .drawer{width:min(520px,94vw)}
+  .drawer-body{font-size:12px}
+  .bubble{line-height:1.65}
+  .empty{padding:22px 0;background:rgba(255,255,255,.012)}
+  .person:hover{box-shadow:0 12px 30px rgba(0,0,0,.28)}
+  /* 手 · 插件 */
+  .st{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:99px;
+      padding:2px 8px;font-size:10px;color:var(--faint);white-space:nowrap}
+  .st.ok{color:#9ff0c6;border-color:rgba(95,224,160,.32);background:rgba(95,224,160,.08)}
+  .st.error{color:#ffb6bd;border-color:rgba(255,107,122,.36);background:rgba(255,107,122,.08)}
+  .st.off{color:var(--faint);border-color:var(--line)}
+  .ns{display:inline-block;border:1px solid rgba(111,156,255,.28);background:rgba(111,156,255,.08);
+      color:#a9c3ff;border-radius:6px;padding:1px 6px;font-size:9px;letter-spacing:.04em}
+  .hand-row td:first-child{white-space:nowrap}
+  .hand-row .p{color:var(--faint);font-size:10px}
+  .hand-group td{background:rgba(255,255,255,.02);color:var(--dim);font-size:10px;letter-spacing:.08em;
+      text-transform:uppercase;padding:6px}
+  .plugin-line{display:flex;align-items:flex-start;gap:9px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.055)}
+  .plugin-line:last-child{border-bottom:0}
+  .plugin-line .who{min-width:0;flex:1}
+  .plugin-line .name{font-size:12px;color:#dfe4ef}
+  .plugin-line .s{font-size:10px;color:var(--faint);margin-top:2px;overflow:hidden;text-overflow:ellipsis}
+  .chan-line{display:flex;flex-wrap:wrap;gap:7px;align-items:center}
+  .note-line{font-size:10px;color:var(--faint);line-height:1.85;margin-top:10px}
+  .cap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(205px,1fr));gap:10px}
+  .cap{border:1px solid var(--line);border-radius:12px;padding:11px 12px;background:rgba(255,255,255,.018)}
+  .cap .hd{display:flex;align-items:center;gap:8px}
+  .cap .n{font-size:12px;font-weight:600;color:#e6eaf4}
+  .cap .hd .st{margin-left:auto}
+  .cap .d{font-size:10px;color:var(--faint);margin-top:6px;line-height:1.7}
+  #hands-actions table{table-layout:fixed}
+  #hands-actions th:nth-child(1),#hands-actions td:nth-child(1){width:146px}
+  #hands-actions th:nth-child(2),#hands-actions td:nth-child(2){width:58px}
+  #hands-actions th:nth-child(4),#hands-actions td:nth-child(4){width:48px;text-align:right}
+  #hands-actions th:nth-child(5),#hands-actions td:nth-child(5){width:58px;text-align:right}
+  /* 提示词页 */
+  .pm-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 18px}
+  .pm-bar-l{display:flex;align-items:center;gap:10px;min-width:0}
+  .pm-bar-l select{min-width:200px;max-width:300px}
+  .pm-bar-r{margin-left:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .pm-eyebrow{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+  .pm-sub{font-size:10px;color:var(--faint)}
+  .pm-col{display:flex;flex-direction:column;gap:14px;min-width:0}
+  .pm-card{padding:18px}
+  .pm-h{display:flex;align-items:baseline;gap:10px;margin-bottom:14px}
+  .pm-h h2{margin:0;font-size:13px;letter-spacing:.02em}
+  .pm-hint{margin-left:auto;font-size:10px;color:var(--faint);font-weight:400}
+  .pm-quote{border-left:2px solid rgba(111,156,255,.5);background:rgba(111,156,255,.05);
+            border-radius:0 12px 12px 0;padding:12px 14px;font-size:12.5px;line-height:1.85;
+            color:#dfe4ef;white-space:pre-wrap}
+  .pm-tags{display:flex;flex-wrap:wrap;gap:6px}
+  .pm-tag{font-size:10px;color:var(--dim);border:1px solid var(--line);background:rgba(255,255,255,.03);
+          border-radius:7px;padding:3px 8px}
+  .pm-tag.on{color:#a9c3ff;border-color:rgba(111,156,255,.3);background:rgba(111,156,255,.09)}
+  .pm-rows{display:flex;flex-direction:column;gap:11px}
+  .pm-row{display:grid;grid-template-columns:76px 1fr;gap:10px;align-items:start}
+  .pm-row .k{font-size:10px;color:var(--faint);padding-top:3px;letter-spacing:.04em}
+  .pm-row .v{font-size:12px;color:#dfe4ef;line-height:1.8;min-width:0}
+  .pm-rules{list-style:none;counter-reset:r;display:flex;flex-direction:column;gap:9px;margin:0;padding:0}
+  .pm-rules li{position:relative;padding-left:25px;font-size:11.5px;line-height:1.75;color:#dfe4ef}
+  .pm-rules li:before{counter-increment:r;content:counter(r);position:absolute;left:0;top:1px;width:16px;height:16px;
+          border-radius:5px;background:rgba(111,156,255,.14);color:#a9c3ff;font-size:9px;display:grid;
+          place-items:center;font-variant-numeric:tabular-nums}
+  .pm-forbid{display:flex;flex-direction:column;gap:7px}
+  .pm-forbid span{position:relative;padding-left:16px;font-size:11.5px;color:#e3c7c9;line-height:1.7}
+  .pm-forbid span:before{content:"×";position:absolute;left:2px;top:0;color:#ff8d99;font-size:11px}
+  .pm-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:14px}
+  .pm-stat{border:1px solid var(--line);border-radius:11px;padding:9px 10px;background:rgba(255,255,255,.018);min-width:0}
+  .pm-stat b{display:block;font-size:16px;color:#fff;font-variant-numeric:tabular-nums;
+             white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pm-stat span{font-size:9px;color:var(--faint);letter-spacing:.06em}
+  .pm-code{background:#080b11;border:1px solid var(--line);border-radius:12px;padding:12px 14px;
+          font:11px/1.75 ui-monospace,Consolas,monospace;color:#c7cedd;white-space:pre-wrap;
+          word-break:break-word;max-height:340px;overflow:auto}
+  .pm-acc{border:1px solid var(--line);border-radius:11px;background:rgba(255,255,255,.015);
+          margin-bottom:8px;overflow:hidden}
+  .pm-acc summary{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;
+          list-style:none;font-size:11.5px;color:#dfe4ef}
+  .pm-acc summary::-webkit-details-marker{display:none}
+  .pm-acc summary:after{content:"›";margin-left:6px;color:var(--dim);font-size:14px;line-height:1;
+          transition:transform .15s}
+  .pm-acc[open] summary:after{transform:rotate(90deg)}
+  .pm-acc summary .n{color:var(--faint);font-size:10px;font-variant-numeric:tabular-nums;margin-left:auto}
+  .pm-acc .pm-code{border:0;border-top:1px solid var(--line);border-radius:0;max-height:300px}
+  .pm-empty{border:1px dashed var(--line);border-radius:12px;padding:18px 14px;text-align:center;
+            color:var(--faint);font-size:11.5px;line-height:1.8}
+  .pm-note{font-size:10px;color:var(--faint);line-height:1.7;margin-top:10px}
+  .pm-bars{display:grid;grid-template-columns:1fr 1fr;gap:2px 18px}
+  .pm-bars .bar-row{grid-template-columns:64px 1fr 34px;padding:2px 0}
+  .pm-bars .bar-row .bar-label,.pm-bars .bar-row .num{font-size:10px}
+  @media(max-width:860px){.pm-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .pm-bars{grid-template-columns:1fr}.pm-row{grid-template-columns:64px 1fr}}
+  /* 编辑基线：模态窗口（不再把页面往下撑长） */
+  .pm-modal{position:fixed;inset:0;z-index:95;display:none;align-items:flex-start;justify-content:center;
+            padding:5vh 18px 18px;background:rgba(3,5,9,.72);backdrop-filter:blur(8px);overflow:auto}
+  .pm-modal.open{display:flex}
+  body.pm-lock{overflow:hidden}
+  .pm-dialog{width:min(1000px,100%);min-height:0}
+  .pm-dialog .editor-shell{max-height:90vh;display:flex;flex-direction:column;margin:0;
+            box-shadow:0 30px 90px rgba(0,0,0,.55)}
+  .pm-dialog .editor-head{flex:none;position:relative;padding-right:44px}
+  .pm-dialog .form-grid{flex:1 1 auto;min-height:0;overflow-y:auto;padding:2px 8px 2px 2px}
+  .pm-dialog .editor-foot{flex:none;margin-top:0;
+            background:linear-gradient(180deg,rgba(9,13,20,0),rgba(9,13,20,.92) 45%)}
+  .pm-x{position:absolute;top:10px;right:10px;width:28px;height:28px;border-radius:9px;
+        border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--dim);
+        font-size:16px;line-height:1;cursor:pointer}
+  .pm-x:hover{color:#fff;border-color:var(--line2);background:rgba(255,255,255,.06)}
+  /* 成长页 */
+  .gw-chart{width:100%;height:auto;display:block}
+  .gw-legend{display:flex;flex-wrap:wrap;gap:10px;font-size:10px;color:var(--dim);margin-top:10px}
+  .gw-legend i{width:14px;height:3px;border-radius:2px;display:inline-block;margin-right:5px;vertical-align:middle}
+  .gw-legend b{color:var(--text);font-weight:500;font-variant-numeric:tabular-nums}
+  #growth-table td.gw-v{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+  #growth-table td.gw-pos{color:#9ff0c6}
+  #growth-table td.gw-neg{color:#ffb6bd}
+  .gw-ev{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.055)}
+  .gw-ev:last-child{border-bottom:0}
+  .gw-ev .t{width:86px;flex:none;font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .gw-ev .b{min-width:0;flex:1}
+  .gw-ev .b .h{font-size:12px;color:#dfe4ef}
+  .gw-ev .b .s{font-size:10px;color:var(--faint);margin-top:3px;line-height:1.6}
+  .gw-profile{font-size:11px;color:var(--dim);line-height:1.8;margin-bottom:12px;
+              padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+              background:rgba(255,255,255,.018)}
 </style>
 </head>
 <body>
@@ -230,14 +453,19 @@
   <nav>
     <button class="active" data-view="overview"><span class="ic">◈</span><span>总览</span></button>
     <button data-view="trajectory"><span class="ic">↝</span><span>会话轨迹</span></button>
+    <button data-view="prompt"><span class="ic">✎</span><span>提示词</span></button>
     <button data-view="people"><span class="ic">◉</span><span>人物卡</span></button>
+    <button data-view="growth"><span class="ic">⌬</span><span>成长</span></button>
     <button data-view="memory"><span class="ic">▤</span><span>记忆</span></button>
     <button data-view="logs"><span class="ic">↯</span><span>主动日志</span></button>
+    <button data-view="health"><span class="ic">♥</span><span>健康</span></button>
+    <button data-view="hands"><span class="ic">⌁</span><span>插件</span></button>
     <button data-view="params"><span class="ic">⚙</span><span>参数</span></button>
     <button data-view="groups"><span class="ic">◇</span><span>群 Agent</span></button>
   </nav>
   <div class="side-foot">WithMe · 人格化主动智能体<br><a href="/" target="_blank">↗ 打开聊天</a></div>
 </aside>
+<div class="toast" id="toast"></div>
 <div class="drawer" id="traj-drawer"><div class="drawer-head"><b id="drawer-title">轨迹详情</b><span class="meta2" id="drawer-sub"></span><button id="drawer-close">×</button></div><div class="drawer-body" id="drawer-body"></div></div>
 <main>
   <div class="top">
@@ -251,10 +479,36 @@
   </div>
 
   <section class="view" id="v-trajectory"><div class="grid"><div class="card span-12">
-    <div class="trace-head"><h2>会话轨迹 <span class="hint">按真实时间排列 · 每条会话一根轴</span></h2><div class="trace-stats" id="trace-stats"></div>
-      <div class="traj-tools"><div class="seg" id="traj-window"><button data-win="3600">近1h</button><button data-win="21600">近6h</button><button data-win="86400" class="on">近24h</button><button data-win="0">全部</button></div>
+    <div class="trace-head"><h2>会话轨迹 <span class="hint">单会话 · 按真实时间摆位</span></h2><div class="trace-stats" id="trace-stats"></div>
+      <div class="traj-tools"><select id="traj-session" title="选择会话"></select>
+      <div class="seg" id="traj-window"><button data-win="3600">近1h</button><button data-win="21600">近6h</button><button data-win="86400" class="on">近24h</button><button data-win="0">全部</button></div>
       <input id="traj-search" placeholder="搜索消息 / 工具 / 人物…"></div></div>
     <div id="traj-axes"></div><div id="trajectory"><div class="empty">加载中…</div></div></div></div></section>
+
+  <section class="view" id="v-prompt"><div class="grid">
+    <div class="card span-12 pm-bar">
+      <div class="pm-bar-l">
+        <span class="pm-eyebrow">会话</span>
+        <select id="prompt-session" title="选择会话"></select>
+        <span class="pm-sub" id="prompt-session-sub">—</span>
+      </div>
+      <div class="pm-bar-r">
+        <span class="ts on" id="pm-role">—</span>
+        <span class="ts" id="pm-msg">—</span>
+        <span class="ts" id="pm-last">—</span>
+        <button class="btn" id="prompt-copy" disabled>复制实发</button>
+        <button class="btn" id="prompt-reload">重新读取</button>
+        <button class="btn primary" id="pe-open">编辑基线</button>
+      </div>
+    </div>
+    <div class="span-7 pm-col" id="prompt-base"></div>
+    <div class="span-5 pm-col" id="prompt-side"></div>
+  </div>
+  <div class="pm-modal" id="pe-modal" aria-hidden="true">
+    <div class="pm-dialog" role="dialog" aria-modal="true" aria-label="编辑基线 / 极限设定">
+      <div id="prompt-edit"></div>
+    </div>
+  </div></section>
 
   <section class="view active" id="v-overview">
     <div class="grid">
@@ -281,7 +535,31 @@
   </section>
 
   <section class="view" id="v-people">
-    <div class="grid"><div class="card span-12"><h2>人物卡 <span class="hint">当前 Agent</span></h2><div class="person-grid" id="people-current"></div></div></div>
+    <div class="grid"><div class="card span-12"><h2>人物卡 <span class="hint" id="people-hint">跨会话 · 聊过的都在这里</span></h2><div class="person-grid" id="people-current"></div></div></div>
+  </section>
+
+  <section class="view" id="v-growth">
+    <div class="grid">
+      <div class="span-12"><div class="kpis">
+        <div class="kpi"><div class="label">认识</div><div class="value" id="g-days">—</div><div class="sub">天</div></div>
+        <div class="kpi"><div class="label">消息 / 记忆</div><div class="value" id="g-msgs">—</div><div class="sub" id="g-mems">—</div></div>
+        <div class="kpi"><div class="label">反思</div><div class="value" id="g-reflect">—</div><div class="sub">次</div></div>
+        <div class="kpi"><div class="label">成长证据</div><div class="value" id="g-n">—</div><div class="sub">条用户消息</div></div>
+      </div></div>
+      <div class="card span-8"><h2>收敛曲线 <span class="hint">p 向目标 P* 靠近 · 纵轴按实际移动缩放</span></h2>
+        <div id="growth-chart"></div><div class="gw-legend" id="growth-legend"></div></div>
+      <div class="card span-4"><h2>当前 vs 出厂 <span class="hint">偏移 p</span></h2>
+        <div id="growth-table"></div>
+        <div class="note-line" id="growth-note">长期画像会以【长期成长】段进入提示词；核心不变量与边界不参与。</div></div>
+      <div class="card span-12">
+        <div class="trace-head"><h2>成长时间线 <span class="hint">append-only · 回滚也留痕</span></h2>
+          <span class="ts" id="growth-profile-chip">长期画像</span>
+          <span class="spacer"></span>
+          <button class="btn" id="growth-reset">回滚成长</button></div>
+        <div class="gw-profile" id="growth-profile">—</div>
+        <div class="list" id="growth-events"></div>
+      </div>
+    </div>
   </section>
 
   <section class="view" id="v-memory">
@@ -293,8 +571,41 @@
     <div class="grid"><div class="card span-12"><h2>主动行为日志</h2><div id="log-table"></div></div></div>
   </section>
 
+  <section class="view" id="v-health">
+    <div class="grid">
+      <div class="card span-12">
+        <h2>组件健康 <span class="hint">只看需要人处理的东西</span></h2>
+        <div id="health-checks" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px"></div>
+        <div class="meta2" id="health-at" style="margin-top:10px"></div>
+      </div>
+      <div class="card span-8"><h2>最近任务</h2><div id="health-tasks"></div></div>
+      <div class="card span-4"><h2>出站队列</h2><div id="health-outbox"></div></div>
+      <div class="card span-12"><h2>最近触发 <span class="hint">回 / 旁听 / 去重</span></h2><div id="health-triggers"></div></div>
+    </div>
+  </section>
+
+  <section class="view" id="v-hands">
+    <div class="grid">
+      <div class="span-12"><div class="kpis">
+        <div class="kpi"><div class="label">手部</div><div class="value" id="h-enabled">—</div><div class="sub" id="h-switches">—</div></div>
+        <div class="kpi"><div class="label">对外动作</div><div class="value" id="h-actions">—</div><div class="sub" id="h-actions-sub">内置 + 插件</div></div>
+        <div class="kpi"><div class="label">社区插件</div><div class="value" id="h-plugins">—</div><div class="sub" id="h-plugins-sub">plugins/*.py</div></div>
+        <div class="kpi"><div class="label">微信通道</div><div class="value" id="h-wechat">—</div><div class="sub" id="h-wechat-sub">独立进程</div></div>
+      </div></div>
+      <div class="card span-12"><h2>接入能力 <span class="hint">按平时的叫法：微信 / 搜索 / 语音 / B站…</span></h2><div class="cap-grid" id="hands-caps"></div></div>
+      <div class="card span-7"><h2>动作清单 <span class="hint">感知层按说明决定何时出手 · 调用数来自 hands_log</span></h2><div id="hands-actions"></div></div>
+      <div class="card span-5"><h2>社区插件 <span class="hint">往 plugins/ 丢 .py，重启生效</span></h2><div id="hands-plugins"></div>
+        <div class="note-line">插件与主程序同进程，安装即信任作者；禁用：settings 表的 <code>plugins_disabled</code>（重启生效）。</div></div>
+      <div class="card span-12"><h2>通道 <span class="hint">微信桥是独立进程，这里只反映配置，不代表在线</span></h2><div id="hands-channels"></div></div>
+    </div>
+  </section>
+
   <section class="view" id="v-params">
-    <div class="grid"><div class="card span-12"><h2>运行参数 <span class="hint">可调参数 · 保存后立即生效</span></h2><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><button class="btn primary" id="params-save">保存参数</button><span class="mini" id="params-toast"></span></div><div class="config-grid" id="config-grid"></div></div></div>
+    <div class="grid"><div class="card span-12"><h2>运行参数 <span class="hint">改动即时体现在这里 · 保存后写入 settings.config_overrides</span></h2>
+      <div class="params-bar"><button class="btn primary" id="params-save" disabled>保存参数</button>
+        <button class="btn" id="params-reset">撤销修改</button><span id="params-dirty" class="badge">已同步</span>
+        <span class="spacer"></span><span class="mini" id="params-toast"></span></div>
+      <div class="config-grid" id="config-grid"></div></div></div>
   </section>
 
   <section class="view" id="v-groups">
@@ -304,6 +615,15 @@
 <script>
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
+let _toastTimer = null;
+function toast(msg, kind) {
+  const el = $('#toast');
+  if (!el) return;
+  el.textContent = String(msg || '');
+  el.className = 'toast show' + (kind ? ' ' + kind : '');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.className = 'toast'; }, 2600);
+}
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pct = v => Math.max(0, Math.min(100, (Number(v) || 0) * 100));
 let DATA = null, TRAJ = null, AUTO = true, view = "overview", groupIdx = -1;
@@ -339,10 +659,12 @@ function personCard(p) {
   const creator = p.kind === 'creator';
   const cls = creator ? 'person creator' : 'person';
   const tags = creator ? '<span class="tag creator">创造者</span>' : '<span class="tag">' + esc(p.kind) + '</span>';
+  const where = (p.sessions || []).length ? '<div class="person-chips" style="margin-top:7px">' +
+    p.sessions.map(s => '<span class="chip">' + esc(s) + '</span>').join('') + '</div>' : '';
   return '<div class="' + cls + '"><div class="head"><div class="avatar">' + esc((p.name || '?').slice(0,1)) +
     '</div><div class="who"><div class="name">' + esc(p.name || p.wxid) + '</div><div class="id">' + esc(p.wxid) + '</div></div>' +
     gauge(p.trust_benevolence, creator ? '#f3c96b' : '#6f9cff') + '</div>' +
-    '<div style="margin-top:8px">' + tags + '</div><div class="mini-bars">' +
+    '<div style="margin-top:8px">' + tags + '</div>' + where + '<div class="mini-bars">' +
     mini('亲近', p.affinity) + mini('信任', p.trust_benevolence) + mini('身份可信', p.trust_identity) +
     mini('能力可信', p.trust_competence) + mini('可披露', p.trust_disclosure) + mini('戒备', p.caution) +
     '</div></div>';
@@ -380,7 +702,8 @@ function renderOverview() {
   $('#k-provider').textContent = (cfg.llm && cfg.llm.provider) || '—';
   $('#k-count').textContent = (DATA.messages || 0) + ' / ' + ((DATA.memory && DATA.memory.total) || 0);
   $('#k-memtype').textContent = ((DATA.memory && DATA.memory.by_type) || []).map(x => x.type + ' ' + x.count).join(' · ') || '—';
-  $('#k-active').textContent = JSON.stringify(st.active_today || {}).replace(/[{}"]/g,'').replace(/:/g,' ');
+  const at = st.active_today || {};
+  $('#k-active').textContent = ['L1','L2','L3'].map(k => k + ' ' + (at[k] || 0)).join(' · ');
   $('#k-perm').textContent = st.permission_level || '—';
   $('#k-cost').textContent = ((st.cost && st.cost.used_today) || 0) + ' tk';
   $('#k-budget').textContent = '预算 ' + ((st.cost && st.cost.budget) || 0);
@@ -397,6 +720,9 @@ function renderOverview() {
 }
 function renderPeople() {
   const people = DATA.people || [];
+  const hint = $('#people-hint');
+  if (hint) hint.textContent = '跨会话 · 共 ' + people.length + ' 张' +
+    (people.length ? '（同一个人多处出现已合并）' : '');
   $('#people-current').innerHTML = people.length ? people.map(personCard).join('') : '<div class="empty">暂无人物卡</div>';
 }
 function renderMemory() {
@@ -421,59 +747,124 @@ function getPath(path) {
   for (const p of path.split('.')) { if (cur == null) return ""; cur = cur[p]; }
   return cur == null ? "" : cur;
 }
-function numField(label, path, step, min, max) {
-  return '<div class="conf"><span class="k">' + esc(label) + '</span><span class="v"><input type="number" data-path="' + esc(path) +
-    '" step="' + step + '" min="' + min + '" max="' + max + '" value="' + esc(getPath(path)) + '"></span></div>';
+let PARAMS_DIRTY = false;
+const PARAM_GROUPS = [
+  {title: '节奏 / 混沌 / 收敛', hint: '主动评估频率与状态演化的手感', fields: [
+    {path: 'tick.fast_seconds', label: '主动评估间隔', unit: '秒', step: 1, min: 15, max: 3600,
+     hint: '内置调度线程多久看一次"该不该开口"；保存后下一轮生效（HTTP 服务与微信桥都读它）'},
+    {path: 'chaos.epsilon_base', label: '噪声幅度上限', step: 0.01, min: 0, max: 0.5,
+     hint: '每次状态演化的随机扰动上限；越大越"跳"，越小越稳'},
+    {path: 'chaos.noise_smoothing', label: '噪声平滑', step: 0.01, min: 0, max: 0.99,
+     hint: '相邻两步噪声的平滑系数，越大越连贯'},
+    {path: 'convergence.alpha', label: '人格回拉强度', step: 0.01, min: 0, max: 1,
+     hint: '偏离人格中心后往回拉的力度'},
+    {path: 'convergence.max_pull', label: '单步回拉上限', step: 0.01, min: 0, max: 1,
+     hint: '一次最多拉回多少，防人格被瞬间掰回'},
+    {path: 'convergence.decay_tau_seconds', label: '基线弛豫时间常数', unit: '秒', step: 60, min: 60, max: 86400,
+     hint: '状态向基线回落的时间尺度'},
+  ]},
+  {title: '主动闸门', hint: '什么分量的冲动才允许开口', fields: [
+    {path: 'gate.thresholds.L1', label: 'L1 微反应门槛', step: 0.01, min: 0, max: 1, hint: '一个表情/半句话的最低活跃分'},
+    {path: 'gate.thresholds.L2', label: 'L2 轻主动门槛', step: 0.01, min: 0, max: 1, hint: '主动搭话的门槛（P5 扫描推荐 0.35）'},
+    {path: 'gate.thresholds.L3', label: 'L3 强主动门槛', step: 0.01, min: 0, max: 1, hint: '默认关；开了才会真的"找你说事"'},
+    {path: 'motivation.weights.social', label: '权重 · 社交', step: 0.01, min: 0, max: 1, hint: '想找人说话的驱动力'},
+    {path: 'motivation.weights.curiosity', label: '权重 · 好奇', step: 0.01, min: 0, max: 1, hint: '想问/想知道的驱动力'},
+    {path: 'motivation.weights.care', label: '权重 · 关心', step: 0.01, min: 0, max: 1, hint: '想照顾对方的驱动力'},
+    {path: 'motivation.weights.expression', label: '权重 · 表达', step: 0.01, min: 0, max: 1, hint: '单纯想说的驱动力'},
+    {path: 'motivation.weights.disturb', label: '权重 · 打扰成本', step: 0.01, min: 0, max: 1, hint: '越大越克制，越不容易开口'},
+  ]},
+  {title: '对话 / 成本 / 反思', hint: '上下文窗口与成长预算', fields: [
+    {path: 'dialogue.window', label: '近窗保留条数', unit: '条', step: 1, min: 4, max: 64, hint: 'Prompt 里原样带上的最近对话条数'},
+    {path: 'dialogue.compress_trigger', label: '压缩触发积压', unit: '条', step: 1, min: 8, max: 500, hint: '积压到多少条就把更早的对话折进滚动摘要'},
+    {path: 'cost.daily_token_budget', label: '日 token 预算', unit: 'token', step: 1000, min: 0, max: 100000000, hint: '0=不限；超了自动降级成保守模式'},
+    {path: 'reflection.enabled', label: '反思成长', type: 'bool', hint: '定期把经历沉淀成洞察/新习惯（有界、可回滚）'},
+    {path: 'reflection.min_interval_hours', label: '反思最小间隔', unit: '小时', step: 1, min: 1, max: 720, hint: '两次反思至少隔多久'},
+    {path: 'reflection.min_new_messages', label: '反思证据门槛', unit: '条', step: 1, min: 1, max: 1000, hint: '新增消息够多少条才值得反思一次'},
+    {path: 'reflection.max_drift', label: '闸门漂移总上限', step: 0.01, min: 0, max: 0.5, hint: '反思对主动 L2 阈值漂移的累计上限（人格中心漂移改用成长包络）'},
+    {path: 'reflection.drift_step', label: '单次漂移步长', step: 0.01, min: 0, max: 0.2, hint: '单次反思可提议的最大步长（LLM 建议会先被裁到这里）'},
+    {path: 'reflection.max_extra_rules', label: '成长规则上限', unit: '条', step: 1, min: 1, max: 12, hint: '角色卡之外最多累积几条；满了淘汰最旧的一条'},
+    {path: 'reflection.growth_envelope', label: '成长包络', step: 0.01, min: 0, max: 0.5, hint: '每维中心相对角色卡最多偏多少；成长只能在这个圈内收敛'},
+    {path: 'reflection.growth_max_step', label: '单次成长上限', step: 0.005, min: 0, max: 0.2, hint: '一次反思最多挪动中心多少'},
+    {path: 'reflection.growth_eta0', label: '成长初始速度', step: 0.05, min: 0, max: 1, hint: '初期步长系数；证据越多步子越小（会饱和）'},
+    {path: 'reflection.growth_wake_gap', label: '可塑性唤醒', step: 0.005, min: 0, max: 0.2, hint: '目标/当前偏离超过该值才重新启用可塑性下限'},
+  ]},
+  {title: '人格权限 / 冷却 / 预算', hint: '分级主动的开关与配额', fields: [
+    {path: 'persona.active_permissions.L0', label: 'L0 沉默权限', type: 'bool', hint: '关掉=完全不主动'},
+    {path: 'persona.active_permissions.L1', label: 'L1 微反应权限', type: 'bool', hint: '表情/半句话级别'},
+    {path: 'persona.active_permissions.L2', label: 'L2 轻主动权限', type: 'bool', hint: '主动搭话级别'},
+    {path: 'persona.active_permissions.L3', label: 'L3 强主动权限', type: 'bool', hint: '默认关'},
+    {path: 'persona.cooldown_seconds.L1', label: 'L1 冷却', unit: '秒', step: 1, min: 0, max: 2592000, hint: '两次同类微反应的最小间隔'},
+    {path: 'persona.cooldown_seconds.L2', label: 'L2 冷却', unit: '秒', step: 1, min: 0, max: 2592000, hint: '两次轻主动的最小间隔'},
+    {path: 'persona.cooldown_seconds.L3', label: 'L3 冷却', unit: '秒', step: 1, min: 0, max: 2592000, hint: '两次强主动的最小间隔'},
+    {path: 'persona.daily_budget.L1', label: 'L1 日预算', unit: '次', step: 1, min: 0, max: 1000, hint: '每天最多几次'},
+    {path: 'persona.daily_budget.L2', label: 'L2 日预算', unit: '次', step: 1, min: 0, max: 1000, hint: '每天最多几次'},
+    {path: 'persona.daily_budget.L3', label: 'L3 日预算', unit: '次', step: 1, min: 0, max: 1000, hint: '每天最多几次'},
+  ]},
+  {title: '审核 Agent', hint: '双 Agent 的第二个人：只判断、不说话', fields: [
+    {path: 'reviewer.mode', label: '审核模式', type: 'select',
+     options: [['llm', '规则 + LLM 审稿员（真双 Agent，推荐）'], ['rule', '只跑确定性规则（零额外成本）'], ['off', '关闭审核']],
+     hint: 'LLM 模式每条出门的话都请审稿员看一遍'},
+    {path: 'reviewer.llm_purposes', label: '走 LLM 审稿的用途', type: 'list', hint: '逗号分隔：respond / proactive / chime'},
+    {path: 'reviewer.max_llm_per_day', label: '审稿日上限', unit: '次', step: 10, min: 0, max: 100000, hint: '0=不限；防审稿把预算烧穿'},
+    {path: 'reviewer.timeout_seconds', label: '审稿超时', unit: '秒', step: 1, min: 3, max: 120, hint: '超时宁可放行也不卡住回复'},
+    {path: 'reviewer.max_tokens', label: '审稿输出上限', unit: 'token', step: 10, min: 60, max: 4000, hint: '只要一个短 JSON；思考型模型要留够预算'},
+  ]},
+];
+function paramField(f) {
+  const cur = getPath(f.path);
+  let control;
+  if (f.type === 'bool') {
+    control = '<label class="row"><input type="checkbox" data-path="' + esc(f.path) + '"' +
+      (cur ? ' checked' : '') + '> <span>开启</span></label>';
+  } else if (f.type === 'select') {
+    control = '<select data-path="' + esc(f.path) + '" data-kind="text">' +
+      (f.options || []).map(o => '<option value="' + esc(o[0]) + '"' +
+        (String(cur) === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('') + '</select>';
+  } else if (f.type === 'list') {
+    const v = Array.isArray(cur) ? cur.join(',') : cur;
+    control = '<input type="text" data-path="' + esc(f.path) + '" data-kind="list" value="' + esc(v) + '">';
+  } else {
+    control = '<input type="number" data-path="' + esc(f.path) + '" step="' + (f.step || 1) +
+      '" min="' + (f.min == null ? '' : f.min) + '" max="' + (f.max == null ? '' : f.max) +
+      '" value="' + esc(cur) + '">';
+  }
+  return '<div class="conf"><div class="k">' + esc(f.label) +
+    (f.unit ? '<span class="unit">' + esc(f.unit) + '</span>' : '') + '</div>' +
+    '<div class="v">' + control + '</div>' +
+    (f.hint ? '<div class="hint">' + esc(f.hint) + '</div>' : '') + '</div>';
 }
-function boolField(label, path) {
-  return '<div class="conf"><span class="k">' + esc(label) + '</span><span class="v"><label class="row"><input type="checkbox" data-path="' + esc(path) + '"' +
-    (getPath(path) ? ' checked' : '') + '> 开启</label></span></div>';
+function updateParamsBar() {
+  const save = $('#params-save');
+  if (save) save.disabled = !PARAMS_DIRTY;
+  const badge = $('#params-dirty');
+  if (badge) {
+    badge.textContent = PARAMS_DIRTY ? '有未保存修改' : '已同步';
+    badge.className = 'badge' + (PARAMS_DIRTY ? ' dirty' : '');
+  }
 }
-function renderParams() {
+function renderParams(force) {
   if (view === 'params' && document.activeElement && document.activeElement.closest('#v-params')) return;
+  // 有未保存修改就别被 5 秒一次的快照刷新覆盖掉
+  if (!force && PARAMS_DIRTY) return;
   const cfg = DATA.config || {};
   const parts = [];
-  parts.push('<div class="section-title">节奏 / 混沌 / 收敛</div>');
-  parts.push(numField('tick.fast_seconds', 'tick.fast_seconds', 1, 15, 3600));
-  parts.push(numField('tick.medium_seconds', 'tick.medium_seconds', 1, 60, 86400));
-  parts.push(numField('chaos.epsilon_base', 'chaos.epsilon_base', 0.01, 0, 0.5));
-  parts.push(numField('chaos.noise_smoothing', 'chaos.noise_smoothing', 0.01, 0, 0.99));
-  parts.push(numField('convergence.alpha', 'convergence.alpha', 0.01, 0, 1));
-  parts.push(numField('convergence.max_pull', 'convergence.max_pull', 0.01, 0, 1));
-  parts.push(numField('convergence.decay_tau_seconds', 'convergence.decay_tau_seconds', 60, 60, 86400));
-  parts.push('<div class="section-title">主动闸门</div>');
-  ['L1','L2','L3'].forEach(l => parts.push(numField('threshold ' + l, 'gate.thresholds.' + l, 0.01, 0, 1)));
-  ['social','curiosity','care','expression','disturb'].forEach(k => parts.push(numField('weight ' + k, 'motivation.weights.' + k, 0.01, 0, 1)));
-  parts.push('<div class="section-title">对话 / 成本 / 反思</div>');
-  parts.push(numField('dialogue.window', 'dialogue.window', 1, 4, 64));
-  parts.push(numField('dialogue.compress_trigger', 'dialogue.compress_trigger', 1, 8, 500));
-  parts.push(numField('cost.daily_token_budget', 'cost.daily_token_budget', 1000, 0, 100000000));
-  parts.push(boolField('reflection.enabled', 'reflection.enabled'));
-  parts.push(numField('reflection.min_interval_hours', 'reflection.min_interval_hours', 1, 1, 720));
-  parts.push(numField('reflection.min_new_messages', 'reflection.min_new_messages', 1, 1, 1000));
-  parts.push(numField('reflection.max_drift', 'reflection.max_drift', 0.01, 0, 0.5));
-  parts.push('<div class="section-title">人格权限 / 冷却 / 预算</div>');
-  ['L0','L1','L2','L3'].forEach(l => parts.push(boolField('permission ' + l, 'persona.active_permissions.' + l)));
-  ['L1','L2','L3'].forEach(l => parts.push(numField('cooldown ' + l, 'persona.cooldown_seconds.' + l, 1, 0, 86400 * 30)));
-  ['L1','L2','L3'].forEach(l => parts.push(numField('budget ' + l, 'persona.daily_budget.' + l, 1, 0, 1000)));
-  const rv = cfg.reviewer || {};
-  parts.push('<div class="section-title">审核 Agent（双 Agent 的第二个人）</div>');
-  parts.push('<div class="conf"><span class="k">审核模式</span><span class="v"><select data-path="reviewer.mode" data-kind="text">' +
-    [['llm','规则 + LLM 审稿员（真双 Agent，推荐）'],['rule','只跑确定性规则（零额外成本）'],['off','关闭审核']].map(o =>
-      '<option value="' + o[0] + '"' + ((rv.mode || 'llm') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') +
-    '</select></span></div>');
-  parts.push('<div class="conf"><span class="k">走 LLM 审稿的用途（逗号分隔）</span><span class="v"><input data-path="reviewer.llm_purposes" data-kind="list" value="' +
-    esc((rv.llm_purposes || []).join(',')) + '"></span></div>');
-  parts.push(numField('reviewer.max_llm_per_day', 'reviewer.max_llm_per_day', 10, 0, 100000));
-  parts.push(numField('reviewer.timeout_seconds', 'reviewer.timeout_seconds', 1, 3, 120));
-  parts.push(numField('reviewer.max_tokens', 'reviewer.max_tokens', 10, 60, 4000));
-  parts.push('<div class="section-title">AI 接入（保存走 /settings）</div>');
-  parts.push('<div class="conf"><span class="k">LLM provider</span><span class="v"><input id="cfg-provider" value="' + esc((cfg.llm && cfg.llm.provider) || '') + '"></span></div>');
-  parts.push('<div class="conf"><span class="k">LLM model</span><span class="v"><input id="cfg-model" value="' + esc((cfg.llm && cfg.llm.model) || '') + '"></span></div>');
-  parts.push('<div class="conf"><span class="k">LLM base_url</span><span class="v"><input id="cfg-base" style="width:280px" value="' + esc((cfg.llm && cfg.llm.base_url) || '') + '"></span></div>');
-  parts.push('<div class="conf"><span class="k">API Key（留空不变）</span><span class="v"><input id="cfg-key" placeholder="sk-..."></span></div>');
-  parts.push('<div class="conf"><span class="k">memory provider</span><span class="v"><input id="cfg-mem" value="' + esc((cfg.memory && cfg.memory.provider) || '') + '"></span></div>');
+  PARAM_GROUPS.forEach(g => {
+    parts.push('<div class="section-title">' + esc(g.title) +
+      '<span style="text-transform:none;letter-spacing:0;color:var(--faint);font-size:10px"> ' + esc(g.hint || '') + '</span></div>');
+    g.fields.forEach(f => parts.push(paramField(f)));
+  });
+  parts.push('<div class="section-title">AI 接入<span style="text-transform:none;letter-spacing:0;color:var(--faint);font-size:10px"> 保存走 /settings（api key 留空=不改）</span></div>');
+  parts.push('<div class="conf"><div class="k">LLM provider</div><div class="v"><input id="cfg-provider" value="' +
+    esc((cfg.llm && cfg.llm.provider) || '') + '"></div><div class="hint">mock / openai_compatible</div></div>');
+  parts.push('<div class="conf"><div class="k">LLM model</div><div class="v"><input id="cfg-model" value="' +
+    esc((cfg.llm && cfg.llm.model) || '') + '"></div><div class="hint">例如 glm-4-flash / 网关模型名</div></div>');
+  parts.push('<div class="conf"><div class="k">LLM base_url</div><div class="v"><input id="cfg-base" value="' +
+    esc((cfg.llm && cfg.llm.base_url) || '') + '"></div><div class="hint">OpenAI 兼容端点</div></div>');
+  parts.push('<div class="conf"><div class="k">API Key</div><div class="v"><input id="cfg-key" placeholder="留空不变" autocomplete="off"></div><div class="hint">只写进本地库/环境变量</div></div>');
+  parts.push('<div class="conf"><div class="k">记忆后端</div><div class="v"><input id="cfg-mem" value="' +
+    esc((cfg.memory && cfg.memory.provider) || '') + '"></div><div class="hint">sqlite / mem0</div></div>');
   $('#config-grid').innerHTML = parts.join('');
+  updateParamsBar();
 }
 function collectParams() {
   const out = {tick:{},chaos:{},convergence:{},gate:{thresholds:{}},motivation:{weights:{}},dialogue:{},cost:{},reflection:{},reviewer:{},persona:{active_permissions:{},cooldown_seconds:{},daily_budget:{}}};
@@ -492,8 +883,8 @@ function collectParams() {
   return out;
 }
 async function saveParams() {
-  const toast = $('#params-toast');
-  toast.textContent = '保存中…';
+  const note = $('#params-toast');
+  if (note) note.textContent = '保存中…';
   try {
     const settingsPayload = {
       llm: {provider: $('#cfg-provider').value.trim(), model: $('#cfg-model').value.trim(),
@@ -503,9 +894,23 @@ async function saveParams() {
     if ($('#cfg-key').value.trim()) settingsPayload.llm.api_key = $('#cfg-key').value.trim();
     await api('/settings', {method:'PUT', body: JSON.stringify(settingsPayload)});
     await api('/config', {method:'POST', body: JSON.stringify(collectParams())});
-    toast.textContent = '已保存并立即生效 ✓';
-    setTimeout(() => { toast.textContent = ''; refresh(); }, 900);
-  } catch (e) { toast.textContent = '保存失败：' + e.message; }
+    PARAMS_DIRTY = false;
+    updateParamsBar();
+    if (note) note.textContent = '已保存 ✓';
+    toast('参数已保存并立即生效', 'ok');
+    setTimeout(() => { if (note) note.textContent = ''; refresh(); }, 700);
+  } catch (e) {
+    if (note) note.textContent = '保存失败';
+    toast('保存失败：' + e.message, 'err');
+  }
+}
+function resetParams() {
+  PARAMS_DIRTY = false;
+  const ae = document.activeElement;
+  if (ae && ae.blur) ae.blur();
+  renderParams(true);
+  updateParamsBar();
+  toast('已撤销未保存的修改', '');
 }
 function fmtTrace(it) {
   const tr = it.trace || {};
@@ -543,16 +948,11 @@ function fmtTrace(it) {
   }
   return bits.length ? '<div class="trace">' + bits.join("") + '</div>' : "";
 }
-function buildRounds(items) {
-  const rounds = []; let cur = null;
-  for (const it of items) {
-    if (it.sender === "user") { cur = { items: [it], start: it.created_at, end: it.created_at }; rounds.push(cur); }
-    else { if (!cur) { cur = { items: [], start: it.created_at, end: it.created_at }; rounds.push(cur); } cur.items.push(it); cur.end = Math.max(cur.end, it.created_at); }
-  }
-  return rounds;
-}
+const IDLE_GAP = 15 * 60;   // 超过这个间隔就算新的一轮（主动消息不和几小时前的对话并成一轮）
 let TRAJ_WINDOW = 86400;   // 时间窗（秒），0=全部
-let TRAJ_OFF = new Set();  // 被收起的会话轴
+let TRAJ_SESSIONS = [];    // 会话清单（/trajectory?meta=1）
+let TRAJ_SESSION = null;   // 当前选中的会话 id
+let TRAJ_ROUNDS = [];      // 当前会话按时间窗切出的轮次（抽屉/跳转共用）
 
 function clockAt(ts, withDate) {
   const d = new Date((Number(ts) || 0) * 1000);
@@ -571,6 +971,42 @@ function tickStep(span) {
   for (const s of steps) if (span / s <= 7) return s;
   return 604800;
 }
+function buildRounds(items) {
+  // 一轮 = 用户开口 + 紧跟着的应答/工具。隔了 IDLE_GAP 以上的主动消息算独立一条，
+  // 不能像旧实现那样把隔夜的两条主动硬拉成一根跨 10 小时的"模型回合"。
+  const rounds = []; let cur = null;
+  for (const it of items) {
+    const t = Number(it.created_at) || 0;
+    if (it.sender === 'user') {
+      cur = { items: [it], start: t, end: t, lastAgent: null, kind: 'turn' };
+      rounds.push(cur);
+      continue;
+    }
+    if (!cur || t - cur.end > IDLE_GAP) {
+      cur = { items: [], start: t, end: t, lastAgent: null, kind: 'spontaneous' };
+      rounds.push(cur);
+    }
+    cur.items.push(it);
+    cur.end = Math.max(cur.end, t);
+    if (it.sender === 'agent') cur.lastAgent = Math.max(cur.lastAgent || 0, t);
+  }
+  return rounds;
+}
+function roundDur(r) { return r.lastAgent ? Math.max(0, r.lastAgent - r.start) : 0; }
+function turnMs(r) {
+  const a = r.items.filter(x => x.sender === 'agent' && x.trace && x.trace.turn_ms);
+  return a.length ? Number(a[a.length - 1].trace.turn_ms) : 0;
+}
+function whoName(it, s) {
+  if (it.kind === 'tool') return '工具调用';
+  if (it.speaker) return it.speaker;
+  if (it.sender === 'user') {
+    if (s && s.kind === 'group') return '群友';
+    const creator = ((DATA && DATA.people) || []).filter(p => p.kind === 'creator')[0];
+    return (s && s.id === 'private' && creator && creator.name) || (s && s.label) || '对方';
+  }
+  return '小满';
+}
 function trajBlock(cls, left, width, tip, key, flagged) {
   return '<div class="ablk ' + cls + (flagged ? ' flag' : '') + '" style="left:' + left.toFixed(2) +
     '%;width:' + Math.max(0.4, width).toFixed(2) + '%" title="' + esc(tip) + '" data-round="' + esc(key) + '"></div>';
@@ -582,12 +1018,13 @@ function axisLane(s, lane, rounds, pos) {
     if (lane === 'input') {
       for (const it of r.items) {
         if (it.sender === 'user') out.push(trajBlock('input', pos(it.created_at), 0.35,
-          (it.speaker || '用户') + ' · ' + clockAt(it.created_at), key));
+          whoName(it, s) + ' · ' + clockAt(it.created_at), key));
       }
     } else if (lane === 'model') {
-      if (r.items.some(x => x.sender === 'agent')) {
-        out.push(trajBlock('model', pos(r.start), Math.max(0.5, pos(r.end) - pos(r.start)),
-          '模型回合 ' + clockAt(r.start) + ' → ' + clockAt(r.end) + ' · ' + Math.round(r.end - r.start) + 's', key));
+      if (r.lastAgent) {
+        const dur = roundDur(r);
+        out.push(trajBlock('model', pos(r.start), Math.max(0.5, pos(r.lastAgent) - pos(r.start)),
+          '模型回合 ' + clockAt(r.start) + ' → ' + clockAt(r.lastAgent) + (dur >= 1 ? ' · ' + durText(dur) : ''), key));
       }
     } else {
       for (const it of r.items) {
@@ -599,26 +1036,35 @@ function axisLane(s, lane, rounds, pos) {
   return out.join('');
 }
 function renderRound(s, r, idx) {
-  const dur = Math.max(0, (r.end || r.start) - r.start);
-  let h = '<div class="round" id="round-' + esc(s.id) + '-' + idx + '"><div class="round-head"><b>第 ' + (idx + 1) + ' 轮</b><span>' +
-    clockAt(r.start, true) + '</span><span>' + Math.round(dur) + 's</span>' +
+  const dur = roundDur(r), ms = turnMs(r);
+  const head = r.kind === 'turn' ? ('第 ' + (idx + 1) + ' 轮') : '主动';
+  let h = '<div class="round" id="round-' + esc(s.id) + '-' + idx + '"><div class="round-head"><b>' + head + '</b><span>' +
+    clockAt(r.start, true) + '</span>' +
+    (dur >= 1 ? '<span>' + durText(dur) + '</span>' : '') +
+    (ms ? '<span>' + (ms / 1000).toFixed(1) + 's 应答</span>' : '') +
     '<span>' + r.items.filter(x => x.kind === 'tool').length + ' 次工具</span><span class="dotline"></span></div>';
   for (const it of r.items) {
     const cls = it.kind === 'tool' ? 'tool' : (it.sender === 'user' ? 'user' : '');
-    const who = it.kind === 'tool' ? '工具调用' : (it.sender === 'user' ? (it.speaker || '用户') : (it.speaker || '小满'));
-    h += '<div class="te ' + cls + '"><div class="meta"><span class="who">' + esc(who) + '</span><span>' + clockAt(it.created_at, true) + '</span></div>' +
+    h += '<div class="te ' + cls + '"><div class="meta"><span class="who">' + esc(whoName(it, s)) + '</span><span>' +
+      clockAt(it.created_at, true) + '</span></div>' +
       '<div class="bubble">' + esc(it.kind === 'tool' ? (it.action || '') : (it.content || '')) + '</div>' + fmtTrace(it) + '</div>';
   }
   return h + '</div>';
 }
+function currentSession() {
+  // 新接口只回选中会话的条目；旧接口（没重启的服务）会把所有会话都带回来，
+  // 这里按 id 找一次就够了，前后端版本不一致时也不至于显示错人。
+  const list = (TRAJ && TRAJ.sessions) || [];
+  return list.filter(x => x.id === TRAJ_SESSION)[0] || list[0] || null;
+}
 function renderTrajectory() {
-  const sessions = (TRAJ && TRAJ.sessions) || [];
-  const all = sessions.reduce((a, s) => a.concat(s.items || []), []);
+  const s = currentSession();
+  const all = (s && s.items) || [];
   const axesEl = $('#traj-axes');
-  if (!all.length) {
+  if (!s || !all.length) {
     $('#trace-stats').innerHTML = '';
     if (axesEl) axesEl.innerHTML = '';
-    $('#trajectory').innerHTML = '<div class="empty">暂无轨迹</div>';
+    $('#trajectory').innerHTML = '<div class="empty">' + (TRAJ_SESSIONS.length ? '这个会话还没有轨迹' : '暂无轨迹') + '</div>';
     return;
   }
   const times = all.map(x => Number(x.created_at) || 0);
@@ -629,89 +1075,77 @@ function renderTrajectory() {
   const span = t1 - t0;
   const pos = t => Math.max(0, Math.min(100, ((Number(t) || t0) - t0) / span * 100));
   const withDate = span > 86400;
-  const prep = sessions.map(s => {
-    const items = (s.items || []).filter(x => (Number(x.created_at) || 0) >= t0);
-    return { s: s, items: items, rounds: buildRounds(items) };
-  });
-  const roundsN = prep.reduce((a, p) => a + p.rounds.length, 0);
-  const callsN = prep.reduce((a, p) => a + p.items.filter(x => x.kind === 'tool').length, 0);
-  const msgN = prep.reduce((a, p) => a + p.items.filter(x => x.kind === 'message').length, 0);
+  const items = all.filter(x => (Number(x.created_at) || 0) >= t0);
+  const rounds = buildRounds(items);
+  TRAJ_ROUNDS = rounds;
+  if (!rounds.length) {
+    $('#trace-stats').innerHTML = '<span class="ts">该时间窗内没有消息</span>';
+    axesEl.innerHTML = '';
+    $('#trajectory').innerHTML = '<div class="empty">这个时间窗内没有轨迹，换个窗口看看</div>';
+    return;
+  }
+  const callsN = items.filter(x => x.kind === 'tool').length;
+  const msgN = items.filter(x => x.kind === 'message').length;
+  const truncated = s.truncated ? '<span class="ts" title="' + esc('接口只回最近 ' + (s.count || 0) + ' 条，这个会话一共 ' + (s.total || 0) + ' 条') +
+    '">数据 <b>最近 ' + (s.count || 0) + ' / 共 ' + (s.total || 0) + '</b></span>' : '';
   $('#trace-stats').innerHTML =
-    '<span class="ts on">会话 <b>' + sessions.length + '</b></span>' +
-    '<span class="ts">轮次 <b>' + roundsN + '</b></span>' +
+    '<span class="ts on">会话 <b>' + TRAJ_SESSIONS.length + '</b></span>' +
+    '<span class="ts">轮次 <b>' + rounds.length + '</b></span>' +
     '<span class="ts">调用 <b>' + callsN + '</b></span>' +
     '<span class="ts">消息 <b>' + msgN + '</b></span>' +
-    '<span class="ts">跨度 <b>' + durText(span) + '</b></span>';
+    '<span class="ts">跨度 <b>' + durText(span) + '</b></span>' + truncated +
+    (TRAJ_LEGACY ? '<span class="ts" title="轨迹接口还是旧版：重启 python -m src.main serve 后生效">后端待重启</span>' : '');
 
   const step = tickStep(span);
   let ticks = '';
   for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
     ticks += '<div class="tick" style="left:' + pos(t).toFixed(2) + '%"><span>' + clockAt(t, withDate) + '</span></div>';
   }
-  let html = '<div class="axes"><div class="ruler"><div class="rlabel">时间</div><div class="rtrack">' + ticks + '</div></div>';
-  for (const p of prep) {
-    const s = p.s, off = TRAJ_OFF.has(s.id);
-    const last = p.items.length ? p.items[p.items.length - 1].created_at : 0;
-    html += '<div class="axis' + (off ? ' off' : '') + '">' +
-      '<div class="axis-head"><span class="dot ' + (s.kind === 'group' ? 'group' : '') + '"></span><b>' + esc(s.label || s.id) + '</b>' +
-      '<span class="meta">' + (s.kind === 'group' ? '群聊' : '私聊') + ' · ' + p.rounds.length + ' 轮 · ' + p.items.length + ' 条' +
-      (last ? ' · 最近 ' + clockAt(last, withDate) : '') + '</span><span class="spacer"></span>' +
-      '<button data-toggle="' + esc(s.id) + '">' + (off ? '展开' : '收起') + '</button></div>' +
-      '<div class="arow"><span>输入</span><div class="atrack grid">' + axisLane(s, 'input', p.rounds, pos) + '</div></div>' +
-      '<div class="arow"><span>模型</span><div class="atrack grid">' + axisLane(s, 'model', p.rounds, pos) + '</div></div>' +
-      '<div class="arow"><span>工具</span><div class="atrack grid">' + axisLane(s, 'tool', p.rounds, pos) + '</div></div>' +
-      '</div>';
-  }
-  html += '<div class="axis-legend"><span><i style="background:#5fe0a0"></i>输入（谁说了什么）</span>' +
-    '<span><i style="background:#8b7bff"></i>模型（思考 → 出声）</span>' +
+  const last = items.length ? items[items.length - 1].created_at : 0;
+  let html = '<div class="axes"><div class="ruler"><div class="rlabel">时间</div><div class="rtrack">' + ticks + '</div></div>' +
+    '<div class="axis"><div class="axis-head"><span class="dot ' + (s.kind === 'group' ? 'group' : '') + '"></span><b>' + esc(s.label || s.id) + '</b>' +
+    '<span class="meta">' + (s.kind === 'group' ? '群聊' : '私聊') + ' · ' + rounds.length + ' 轮 · ' + items.length + ' 条' +
+    (last ? ' · 最近 ' + clockAt(last, withDate) : '') + '</span></div>' +
+    '<div class="arow"><span>输入</span><div class="atrack grid">' + axisLane(s, 'input', rounds, pos) + '</div></div>' +
+    '<div class="arow"><span>模型</span><div class="atrack grid">' + axisLane(s, 'model', rounds, pos) + '</div></div>' +
+    '<div class="arow"><span>工具</span><div class="atrack grid">' + axisLane(s, 'tool', rounds, pos) + '</div></div>' +
+    '</div>' +
+    '<div class="axis-legend"><span><i style="background:#5fe0a0"></i>输入（谁说了什么）</span>' +
+    '<span><i style="background:#8b7bff"></i>模型（收到 → 出声）</span>' +
     '<span><i style="background:#f3b55c"></i>工具调用</span>' +
-    '<span style="margin-left:auto">点色块跳到对应轮次 · 点"收起"折叠某条会话轴</span></div></div>';
+    '<span style="margin-left:auto">点色块跳到对应轮次 · 主动消息单独成条（间隔 ≥15 分钟）</span></div></div>';
   axesEl.innerHTML = html;
 
   const q = ($('#traj-search').value || '').trim().toLowerCase();
+  const keep = rounds.map(r => !q || (r.items || []).some(it =>
+    (((it.content || '') + ' ' + (it.action || '') + ' ' + (it.speaker || '') + ' ' +
+      JSON.stringify(it.params || '') + ' ' + (it.trace ? JSON.stringify(it.trace) : ''))).toLowerCase().includes(q)));
   let list = '';
-  for (const p of prep) {
-    const s = p.s;
-    const keep = p.rounds.map(r => !q || (r.items || []).some(it =>
-      (((it.content || '') + ' ' + (it.action || '') + ' ' + (it.speaker || ''))).toLowerCase().includes(q)));
-    if (!keep.some(Boolean)) continue;
-    list += '<div class="sess-title"><span class="dot ' + (s.kind === 'group' ? 'group' : '') + '"></span><b>' +
-      esc(s.label || s.id) + '</b><span class="mini">' + keep.filter(Boolean).length + ' 轮' +
-      (s.room ? ' · ' + esc(s.room) : ' · 私聊') + '</span></div>';
-    p.rounds.forEach((r, ri) => { if (keep[ri]) list += renderRound(s, r, ri); });
-  }
+  rounds.forEach((r, ri) => { if (keep[ri]) list += renderRound(s, r, ri); });
   $('#trajectory').innerHTML = list || '<div class="empty">没有匹配的轨迹</div>';
 }
 function openDrawer(key) {
   const parts = String(key).split('|');
-  const sid = parts[0], idx = Number(parts[1]);
-  const session = ((TRAJ && TRAJ.sessions) || []).filter(s => s.id === sid)[0];
-  if (!session) return;
-  const rounds = buildRounds((session.items || []).filter(x => (Number(x.created_at) || 0) >= lastT0()));
-  const r = rounds[idx];
-  if (!r) return;
-  const dur = Math.max(0, (r.end || r.start) - r.start);
-  $('#drawer-title').textContent = (session.label || session.id) + ' · 第 ' + (idx + 1) + ' 轮';
-  $('#drawer-sub').textContent = clockAt(r.start, true) + ' → ' + clockAt(r.end || r.start, true) + ' · ' + Math.round(dur) + 's';
+  const idx = Number(parts[1]);
+  const s = currentSession();
+  const r = TRAJ_ROUNDS[idx];
+  if (!s || !r) return;
+  const dur = roundDur(r);
+  $('#drawer-title').textContent = (s.label || s.id) + ' · ' + (r.kind === 'turn' ? '第 ' + (idx + 1) + ' 轮' : '主动');
+  $('#drawer-sub').textContent = clockAt(r.start, true) + (r.lastAgent ? ' → ' + clockAt(r.lastAgent, true) : '') +
+    (dur >= 1 ? ' · ' + durText(dur) : '');
   const blocks = r.items.map(it => {
     if (it.kind === 'tool') {
       return '<div class="dsec"><div class="t">工具 · ' + esc(it.action || '') + '</div>' +
         '<pre>' + esc(JSON.stringify(it.params, null, 1)) + '</pre>' +
         '<pre>' + esc(JSON.stringify(it.result, null, 1)).slice(0, 1200) + '</pre></div>';
     }
-    const who = it.sender === 'user' ? (it.speaker || '对方') : (it.speaker || '小满');
-    return '<div class="dsec"><div class="t">' + esc(who) + ' · ' + clockAt(it.created_at, true) + '</div>' +
+    return '<div class="dsec"><div class="t">' + esc(whoName(it, s)) + ' · ' + clockAt(it.created_at, true) + '</div>' +
       '<div class="dbub">' + esc(it.content || '') + '</div>' + fmtTrace(it) + '</div>';
   }).join('');
-  $('#drawer-body').innerHTML = '<div class="dsec"><div class="t">' + esc(session.kind === 'group' ? '群聊' : '私聊') +
-    (session.room ? ' · ' + esc(session.room) : '') + '</div></div>' + blocks;
+  $('#drawer-body').innerHTML = '<div class="dsec"><div class="t">' + esc(s.kind === 'group' ? '群聊' : '私聊') +
+    (s.room ? ' · ' + esc(s.room) : '') + '</div></div>' + blocks;
   $('#traj-drawer').classList.add('open');
-}
-function lastT0() {
-  const all = ((TRAJ && TRAJ.sessions) || []).reduce((a, s) => a.concat(s.items || []), []);
-  const times = all.map(x => Number(x.created_at) || 0);
-  const tMax = Math.max.apply(null, times), tMin = Math.min.apply(null, times);
-  return TRAJ_WINDOW ? Math.max(tMin, tMax - TRAJ_WINDOW) : tMin;
 }
 function jumpRound(key) {
   const el = document.getElementById('round-' + String(key).replace('|', '-'));
@@ -722,9 +1156,407 @@ function jumpRound(key) {
   }
   openDrawer(key);
 }
-async function refreshTrajectory() {
-  try { TRAJ = await api('/trajectory?limit=120'); renderTrajectory(); }
-  catch (e) { $('#trajectory').innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>'; }
+let TRAJ_LEGACY = false;   // 服务端还是旧接口（没重启）：meta 请求会带回全部条目
+async function refreshTrajectoryMeta() {
+  const d = await api('/trajectory?meta=1');
+  TRAJ_SESSIONS = (d && d.sessions) || [];
+  TRAJ_LEGACY = !(TRAJ_SESSIONS[0] && TRAJ_SESSIONS[0].total !== undefined);
+  if (!TRAJ_SESSION || !TRAJ_SESSIONS.some(x => x.id === TRAJ_SESSION)) {
+    const sorted = TRAJ_SESSIONS.slice().sort((a, b) => (Number(b.last) || 0) - (Number(a.last) || 0));
+    TRAJ_SESSION = sorted.length ? sorted[0].id : null;
+  }
+  const sel = $('#traj-session');
+  if (sel) sel.innerHTML = TRAJ_SESSIONS.map(x => '<option value="' + esc(x.id) + '"' +
+    (x.id === TRAJ_SESSION ? ' selected' : '') + '>' + esc(x.label || x.id) +
+    (x.kind === 'group' ? ' · 群' : '') + '</option>').join('');
+}
+async function refreshTrajectory(forceMeta) {
+  try {
+    if (forceMeta || !TRAJ_SESSIONS.length) await refreshTrajectoryMeta();
+    if (!TRAJ_SESSION) { TRAJ = { sessions: [] }; renderTrajectory(); return; }
+    TRAJ = await api('/trajectory?limit=' + (TRAJ_LEGACY ? 120 : 300) +
+      '&session=' + encodeURIComponent(TRAJ_SESSION));
+    renderTrajectory();
+  } catch (e) { $('#trajectory').innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>'; }
+}
+let PROMPT = null, PROMPT_SESSION = null, PROMPT_LAST_TEXT = '', PROMPT_EDIT = false;
+function pmCard(title, hint, body) {
+  return '<div class="card pm-card"><div class="pm-h"><h2>' + esc(title) + '</h2>' +
+    (hint ? '<span class="pm-hint">' + esc(hint) + '</span>' : '') + '</div>' + body + '</div>';
+}
+function pmTags(items, cls) {
+  return '<div class="pm-tags">' + (items || []).map(x =>
+    '<span class="pm-tag' + (cls ? ' ' + cls : '') + '">' + esc(String(x)) + '</span>').join('') + '</div>';
+}
+function pmRules(items) {
+  return '<ol class="pm-rules">' + (items || []).map(x => '<li>' + esc(String(x)) + '</li>').join('') + '</ol>';
+}
+function pmForbid(items) {
+  return '<div class="pm-forbid">' + (items || []).map(x => '<span>' + esc(String(x)) + '</span>').join('') + '</div>';
+}
+function pmRow(k, v) {
+  return '<div class="pm-row"><span class="k">' + esc(k) + '</span><span class="v">' + v + '</span></div>';
+}
+function pmStat(v, label) {
+  return '<div class="pm-stat"><b>' + esc(String(v == null ? '—' : v)) + '</b><span>' + esc(label) + '</span></div>';
+}
+function pmAcc(title, text) {
+  const s = typeof text === 'string' ? text : JSON.stringify(text, null, 1);
+  return '<details class="pm-acc"><summary>' + esc(title) + '<span class="n">' + esc(String(s.length)) +
+    ' 字</span></summary><pre class="pm-code">' + esc(s) + '</pre></details>';
+}
+function renderPrompt() {
+  if (!PROMPT) return;
+  const base = PROMPT.base || {};
+  const sessions = PROMPT.sessions || [];
+  const cur = sessions.filter(s => s.id === PROMPT_SESSION)[0] || sessions[0] || null;
+  const lp = (cur && cur.last_prompt) || null;
+  PROMPT_LAST_TEXT = (lp && lp.text) || '';
+
+  // ---- 顶部工具条 ----
+  $('#pm-role').innerHTML = '基线 <b>' + esc(base.role_id || '—') + '</b>';
+  $('#pm-msg').innerHTML = '会话 <b>' + sessions.length + '</b>';
+  $('#pm-last').innerHTML = lp ? '最近实发 <b>' + clockAt(lp.ts, true) + '</b>'
+    : '最近实发 <b>无</b>';
+  $('#prompt-copy').disabled = !PROMPT_LAST_TEXT;
+  $('#prompt-session-sub').textContent = cur
+    ? (cur.kind === 'group' ? '群聊' : '私聊') + ' · ' + (cur.name || '—')
+    : '—';
+
+  // ---- 左列：基线设定 ----
+  const st = base.style || {};
+  const creator = base.creator || {};
+  const roast = {off: 'off · 不玩梗', mild: 'mild · 朋友间玩梗', on: 'on · 更放开'}[st.roast_level] || st.roast_level || '—';
+  let L = '';
+  L += pmCard('身份摘要', 'persona.yaml · 每轮都带',
+    '<div class="pm-quote">' + esc(base.identity_summary || '') + '</div>' +
+    '<div class="pm-tags" style="margin-top:12px"><span class="pm-tag on">role_id · ' +
+    esc(base.role_id || '') + '</span>' +
+    (creator.name ? '<span class="pm-tag">创造者 · ' + esc(creator.name) + '</span>' : '') + '</div>');
+
+  L += pmCard('核心不变量', '硬约束 · 不随对话改变', pmRules(base.core_invariants));
+
+  let style = '<div class="pm-rows">';
+  style += pmRow('语气', esc(st.tone || '—'));
+  style += pmRow('玩梗尺度', '<span class="pm-tag">' + esc(roast) + '</span>');
+  if ((st.catchphrases || []).length) style += pmRow('口头禅', pmTags(st.catchphrases));
+  if ((st.keywords || []).length) style += pmRow('关键词', pmTags(st.keywords));
+  if ((st.chat_rules || []).length) style += pmRow('聊天习惯', pmRules(st.chat_rules));
+  if ((st.forbidden || []).length) style += pmRow('禁忌', pmForbid(st.forbidden));
+  style += '</div>';
+  L += pmCard('表达风格', 'style · 决定她怎么开口', style);
+
+  L += pmCard('边界', '踩线会被审核打回',
+    (base.boundaries || []).length ? pmForbid(base.boundaries) : '<div class="pm-empty">未设置</div>');
+
+  L += pmCard('能力清单', '从手部注册表来 · 每轮都会带',
+    (base.capabilities || []).length ? pmTags(base.capabilities, 'on') : '<div class="pm-empty">未注册动作</div>');
+
+  const bs = base.baseline_state || {};
+  const bars = Object.keys(bs).map(k => '<div class="bar-row"><span class="bar-label">' + esc(k) +
+    '</span><span class="track"><span class="fill" style="width:' + pct(bs[k]) + '%"></span></span>' +
+    '<span class="num">' + Number(bs[k]).toFixed(2) + '</span></div>').join('');
+  L += pmCard('基线状态', '0-1 · 她平时停的位置',
+    Object.keys(bs).length ? '<div class="pm-bars">' + bars + '</div>' : '<div class="pm-empty">未设置</div>');
+
+  const bp = base.base_prompt || {};
+  let bpBody;
+  if (bp && bp.text) {
+    const secs = bp.sections || {};
+    bpBody = '<div class="pm-tags" style="margin-bottom:10px"><span class="pm-tag on">' +
+      esc(String(bp.chars || 0)) + ' 字符</span>' +
+      (Object.keys(secs).length ? '<span class="pm-tag">' + Object.keys(secs).length + ' 段</span>' : '') +
+      '<span class="pm-tag">不接状态 / 记忆 / 对话</span></div>' +
+      Object.keys(secs).map(k => pmAcc(k, secs[k])).join('') +
+      pmAcc('完整渲染文本', bp.text);
+  } else {
+    bpBody = '<div class="pm-empty">预览不可用</div>';
+  }
+  L += pmCard('初始基线提示词', '群聊会在此之上加【群聊规则】【群聊身份】', bpBody);
+  $('#prompt-base').innerHTML = L;
+
+  // ---- 右列：会话叠加 / 最近实发 / 运行开关 ----
+  let R = '';
+  if (!cur) {
+    R = pmCard('会话叠加', '', '<div class="pm-empty">暂无会话</div>') +
+      pmCard('最近一次实发', '', '<div class="pm-empty">暂无会话</div>');
+  } else {
+    let sbody = '<div class="pm-stats">' + pmStat(cur.messages, '消息') + pmStat(cur.memories, '记忆') +
+      pmStat(cur.people, '人物') + pmStat(cur.kind === 'group' ? '群' : '私', '类型') + '</div>';
+    const meta = [];
+    if (cur.gate_shift_L2) meta.push('L2 阈值漂移 ' + Number(cur.gate_shift_L2).toFixed(2));
+    const drift = cur.attractor_drift || {};
+    Object.keys(drift).forEach(d => meta.push('人格漂移 ' + d + ' ' +
+      (Number(drift[d]) >= 0 ? '+' : '') + Number(drift[d]).toFixed(2)));
+    if (meta.length) sbody += '<div class="pm-tags" style="margin-bottom:4px">' +
+      meta.map(m => '<span class="pm-tag">' + esc(m) + '</span>').join('') + '</div>' +
+      '<div class="pm-note" style="margin-top:0">漂移移动的是吸引子中心，作用在状态回拉上，最终体现在【当前状态】</div>';
+    const ps = cur.persona_style || {};
+    const psLabel = {tone: '语气', catchphrases: '口头禅', chat_rules: '聊天习惯',
+                     forbidden: '禁忌', roast_level: '玩梗尺度', keywords: '关键词'};
+    const psKeys = Object.keys(ps).filter(k => {
+      const v = ps[k];
+      return !(v == null || v === '' || (Array.isArray(v) && !v.length));
+    });
+    if (psKeys.length) {
+      sbody += '<div class="pm-hint" style="margin:14px 0 4px">风格覆盖（settings.persona_style）</div>' +
+        '<div class="pm-rows">' + psKeys.map(k => pmRow(psLabel[k] || k,
+          Array.isArray(ps[k]) ? pmTags(ps[k]) : esc(String(ps[k])))).join('') + '</div>';
+    }
+    if ((cur.growth_rules || []).length) {
+      sbody += '<div class="pm-hint" style="margin:16px 0 2px">成长规则（反思沉淀）</div>' +
+        '<div class="pm-note" style="margin-top:0">会作为【成长规则】段进入每轮提示词；条数由参数页的上限控制，满了淘汰最旧</div>' +
+        pmRules(cur.growth_rules);
+    } else {
+      sbody += '<div class="pm-hint" style="margin:16px 0 2px">成长规则</div>' +
+        '<div class="pm-note" style="margin-top:0">这个会话还没有反思沉淀的规则（反思触发后才会生成）</div>';
+    }
+    if (cur.summary) sbody += pmAcc('对话摘要（压缩）', cur.summary);
+    R += pmCard('会话叠加', cur.label || cur.id, sbody);
+
+    let lpBody;
+    if (!lp) {
+      lpBody = '<div class="pm-empty">这个会话还没有提示词快照<br>重启后收到下一条消息就会记录</div>';
+    } else {
+      const secs = lp.sections || {};
+      lpBody = '<div class="pm-tags" style="margin-bottom:12px">' +
+        '<span class="pm-tag on">' + esc(lp.purpose || '未标注用途') + '</span>' +
+        '<span class="pm-tag">' + clockAt(lp.ts, true) + '</span>' +
+        '<span class="pm-tag">' + esc(String(lp.chars || 0)) + ' 字符</span></div>' +
+        Object.keys(secs).map(k => pmAcc(k, secs[k])).join('') +
+        (lp.text ? pmAcc('完整渲染文本（system）', lp.text) : '');
+    }
+    R += pmCard('最近一次实发', lp ? '按段折叠 · 点开看原文' : '还没有快照', lpBody);
+  }
+
+  const sw = base.switches || {};
+  const swLabel = {state_style: '状态驱动语言', reviewer_mode: '审核 Agent',
+                   memory_provider: '记忆后端', dialogue_window: '对话窗口', retrieval_top_k: '检索条数'};
+  const swRows = Object.keys(sw).map(k => pmRow(swLabel[k] || k,
+    typeof sw[k] === 'boolean' ? (sw[k] ? '开' : '关') : esc(String(sw[k])))).join('');
+  R += pmCard('运行开关', '当前进程实际生效值',
+    swRows ? '<div class="pm-rows">' + swRows + '</div>' : '<div class="pm-empty">—</div>');
+  $('#prompt-side').innerHTML = R;
+
+  renderPromptEditor();
+}
+let PE_DIRTY = false;
+function peLines(v) { return (v || []).map(x => String(x)).join('\n'); }
+function peField(id, label, value, opts) {
+  opts = opts || {};
+  const control = opts.type === 'textarea'
+    ? '<textarea id="' + id + '" rows="' + (opts.rows || 3) + '">' + esc(value) + '</textarea>'
+    : '<input id="' + id + '" type="text" value="' + esc(value) + '">';
+  const counter = opts.counter ? '<span class="counter" id="' + id + '-count"></span>' : '';
+  return '<div class="field">' +
+    (counter
+      ? '<div class="row"><label>' + esc(label) + '</label>' + counter + '</div>'
+      : '<label>' + esc(label) + '</label>') +
+    control + (opts.hint ? '<span class="hint">' + esc(opts.hint) + '</span>' : '') + '</div>';
+}
+function peBadge() {
+  const el = $('#pe-dirty');
+  if (!el) return;
+  el.textContent = PE_DIRTY ? '有未保存修改' : '已同步';
+  el.className = 'badge' + (PE_DIRTY ? ' dirty' : '');
+}
+function peCounters() {
+  const idEl = $('#pe-identity');
+  const idC = $('#pe-identity-count');
+  if (idEl && idC) {
+    const n = (idEl.value || '').length;
+    idC.textContent = n + ' / 200';
+    idC.className = 'counter' + (n > 200 ? ' over' : '');
+  }
+  const inv = $('#pe-inv');
+  const invC = $('#pe-inv-count');
+  if (inv && invC) {
+    const n = (inv.value || '').split('\n').map(s => s.trim()).filter(Boolean).length;
+    invC.textContent = n + ' 条 / 3-5';
+    invC.className = 'counter' + (n < 3 || n > 5 ? ' over' : '');
+  }
+}
+function renderPromptEditor(force) {
+  const box = $('#prompt-edit');
+  if (!box) return;
+  if (!PROMPT_EDIT || !PROMPT) { box.innerHTML = ''; return; }
+  // 正在编辑就别重建 DOM：5 秒一次的自动刷新会把没保存的输入冲掉
+  if (!force && PROMPT_EDIT) return;
+  const b = PROMPT.base || {};
+  const st = b.style || {};
+  const dims = Object.keys(b.baseline_state || {});
+  const att = {};
+  (b.attractor || []).forEach(a => { att[a.state_name] = a; });
+  const ovKeys = Object.keys(b.overrides || {});
+  let h = '<div class="editor-shell"><div class="editor-head">' +
+    '<div><div class="title">编辑基线 / 极限设定</div>' +
+    '<div class="sub">写 config/persona.overrides.json · serve 立即生效，微信桥重启后生效</div></div>' +
+    '<span class="badge" id="pe-dirty">已同步</span><span class="spacer"></span>' +
+    (ovKeys.length ? '<span class="badge">已覆盖：' + esc(ovKeys.join('、')) + '</span>' : '<span class="badge">当前为 persona.yaml 原值</span>') +
+    '<button class="pm-x" id="pe-x" type="button" title="关闭">×</button>' +
+    '</div><div class="form-grid">';
+
+  h += '<div class="form-section">基线设定</div>';
+  h += peField('pe-identity', '身份摘要', b.identity_summary || '',
+    {type: 'textarea', rows: 3, counter: true, hint: '≤200 字；每轮 Prompt 都会带，别写长'});
+  h += peField('pe-tone', '语气', st.tone || '', {hint: '一句话：怎么说话（口语/碎句/爱玩梗…）'});
+  h += peField('pe-catch', '口头禅', (st.catchphrases || []).join('，'),
+    {hint: '逗号分隔；少量点缀，别每条都用'});
+  h += peField('pe-rules', '聊天习惯', peLines(st.chat_rules),
+    {type: 'textarea', rows: 5, hint: '一行一条；决定她怎么接话、怎么发散'});
+  h += peField('pe-forbidden', '禁忌词 / 说法', peLines(st.forbidden),
+    {type: 'textarea', rows: 4, hint: '一行一条；出现就会被审核打回'});
+  h += '<div class="field"><label>基线状态</label><div class="prompt-kv">' +
+    dims.map(d => '<label class="chipx">' + esc(d) +
+      '<input class="pe-num" data-dim="' + esc(d) + '" type="number" step="0.01" min="0" max="1" value="' +
+      esc(String(b.baseline_state[d])) + '"></label>').join('') +
+    '</div><span class="hint">0-1；她平时停在的位置（会在噪声/事件后往这里回）</span></div>';
+
+  h += '<div class="form-section">极限设定</div>';
+  h += peField('pe-inv', '核心不变量', peLines(b.core_invariants),
+    {type: 'textarea', rows: 5, counter: true, hint: '3-5 条，一行一条；硬约束，不随对话改变'});
+  h += peField('pe-bound', '边界', peLines(b.boundaries),
+    {type: 'textarea', rows: 4, hint: '一行一条；不越的红线（拒绝/降温/不评价亲友…）'});
+  h += '<div class="field" style="grid-column:1/-1"><label>人格吸引子（中心 / 容差 / 权重）</label>' +
+    '<table class="att-table"><thead><tr><th>维度</th><th>中心</th><th>容差（允许漂移上限）</th><th>权重</th></tr></thead><tbody>' +
+    dims.map(d => {
+      const a = att[d] || {};
+      return '<tr><td class="mono">' + esc(d) + '</td>' +
+        ['center', 'tolerance', 'weight'].map(k => '<td><input class="pe-att" data-dim="' + esc(d) +
+          '" data-key="' + k + '" type="number" step="0.01" value="' +
+          esc(a[k] == null ? '' : String(a[k])) + '"></td>').join('') + '</tr>';
+    }).join('') + '</tbody></table>' +
+    '<span class="hint">容差 = 允许她偏离中心多远，超出就算人格漂移；权重 = 该维度在"一致性"里的分量</span></div>';
+  h += '</div><div class="editor-foot">' +
+    '<button class="btn primary" id="pe-save">保存并生效</button>' +
+    '<button class="btn" id="pe-reset">恢复 persona.yaml 出厂值</button>' +
+    '<button class="btn" id="pe-close">关闭</button>' +
+    '<span class="spacer"></span><span class="err" id="pe-err"></span></div></div>';
+  box.innerHTML = h;
+  $('#pe-save').addEventListener('click', savePersona);
+  $('#pe-reset').addEventListener('click', resetPersona);
+  $('#pe-close').addEventListener('click', closePromptEditor);
+  $('#pe-x').addEventListener('click', closePromptEditor);
+  peBadge();
+  peCounters();
+}
+function openPeModal() {
+  const m = $('#pe-modal');
+  if (!m) return;
+  m.classList.add('open');
+  m.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('pm-lock');
+  const first = $('#pe-identity');
+  if (first) setTimeout(() => { try { first.focus(); } catch (e) {} }, 120);
+}
+function closePeModal() {
+  const m = $('#pe-modal');
+  if (!m) return;
+  m.classList.remove('open');
+  m.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('pm-lock');
+}
+function closePromptEditor() {
+  if (PE_DIRTY && typeof confirm === 'function' &&
+      !confirm('还有未保存的修改，确定关闭？')) return;
+  PE_DIRTY = false;
+  PROMPT_EDIT = false;
+  renderPromptEditor();
+  closePeModal();
+}
+function collectPersona() {
+  const lines = id => {
+    const el = $('#' + id);
+    return (el && el.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+  };
+  const payload = {
+    identity_summary: ($('#pe-identity').value || '').trim(),
+    style: {
+      tone: ($('#pe-tone').value || '').trim(),
+      catchphrases: ($('#pe-catch').value || '').split(/[，,]/).map(s => s.trim()).filter(Boolean),
+      chat_rules: lines('pe-rules'),
+      forbidden: lines('pe-forbidden'),
+    },
+    core_invariants: lines('pe-inv'),
+    boundaries: lines('pe-bound'),
+    baseline_state: {},
+    attractor: [],
+  };
+  const att = {};
+  Array.from(document.querySelectorAll('.pe-att')).forEach(el => {
+    const d = el.dataset.dim, k = el.dataset.key;
+    if (!d || !k) return;
+    att[d] = att[d] || { state_name: d };
+    att[d][k] = Number(el.value);
+  });
+  payload.attractor = Object.keys(att).map(d => att[d]).filter(a =>
+    ['center', 'tolerance', 'weight'].every(k => Number.isFinite(a[k])));
+  Array.from(document.querySelectorAll('.pe-num')).forEach(el => {
+    const v = Number(el.value);
+    if (el.dataset.dim && Number.isFinite(v)) payload.baseline_state[el.dataset.dim] = v;
+  });
+  return payload;
+}
+async function savePersona() {
+  const err = $('#pe-err');
+  if (err) err.textContent = '保存中…';
+  try {
+    await api('/persona', { method: 'POST', body: JSON.stringify(collectPersona()) });
+    PE_DIRTY = false;
+    PROMPT_EDIT = false;
+    closePeModal();
+    toast('基线 / 极限设定已保存并生效', 'ok');
+    await refreshPrompt(true);
+    await refresh();
+  } catch (e) {
+    const msg = String(e.message || '');
+    const text = msg.indexOf('404') >= 0
+      ? '后端还没重启（/persona 不存在），重启 python -m src.main serve 后再保存'
+      : msg;
+    if (err) err.textContent = text;
+    toast('保存失败：' + text, 'err');
+  }
+}
+async function resetPersona() {
+  if (typeof confirm === 'function' && !confirm('恢复 persona.yaml 出厂值？当前覆盖会全部清空。')) return;
+  const err = $('#pe-err');
+  if (err) err.textContent = '恢复中…';
+  try {
+    await api('/persona', { method: 'POST', body: JSON.stringify({ reset: true }) });
+    PE_DIRTY = false;
+    PROMPT_EDIT = false;
+    closePeModal();
+    toast('已恢复 persona.yaml 出厂值', 'ok');
+    await refreshPrompt(true);
+    await refresh();
+  } catch (e) {
+    const msg = String(e.message || '');
+    const text = msg.indexOf('404') >= 0 ? '后端还没重启（/persona 不存在）' : msg;
+    if (err) err.textContent = text;
+    toast('恢复失败：' + text, 'err');
+  }
+}
+async function refreshPrompt(force) {
+  try {
+    if (force || !PROMPT) PROMPT = await api('/prompt');
+    const sessions = PROMPT.sessions || [];
+    if (!PROMPT_SESSION || !sessions.some(s => s.id === PROMPT_SESSION)) {
+      PROMPT_SESSION = sessions[0] ? sessions[0].id : null;
+    }
+    const sel = $('#prompt-session');
+    if (sel) sel.innerHTML = sessions.map(s => '<option value="' + esc(s.id) + '"' +
+      (s.id === PROMPT_SESSION ? ' selected' : '') + '>' + esc(s.label || s.id) +
+      (s.kind === 'group' ? ' · 群' : '') + '</option>').join('');
+    if (PROMPT_SESSION) PROMPT = await api('/prompt?session=' + encodeURIComponent(PROMPT_SESSION));
+    renderPrompt();
+  } catch (e) {
+    const msg = String(e.message || '');
+    $('#prompt-base').innerHTML = '';
+    $('#prompt-side').innerHTML = pmCard('加载失败', '', '<div class="pm-empty">' +
+      (msg.indexOf('404') >= 0
+        ? '后端还没重启（/prompt 接口不存在）。重启 python -m src.main serve 后再打开这一页。'
+        : '加载失败：' + esc(msg)) + '</div>');
+  }
 }
 function renderReview() {
   const r = (DATA && DATA.review) || {};
@@ -732,20 +1564,29 @@ function renderReview() {
   const bp = r.by_purpose || {};
   const chips = Object.keys(bp).map(k => '<span class="chipx">' + esc(k) +
     ' <b>' + bp[k].count + '</b>' + (bp[k].retried ? ' · 改写 ' + bp[k].retried : '') +
-    (bp[k].llm_used ? ' · LLM ' + bp[k].llm_used : '') + '</span>').join('');
+    (bp[k].llm_used ? ' · LLM ' + bp[k].llm_used : '') +
+    (bp[k].llm_failed ? ' · <span style="color:#ffb86b">降级 ' + bp[k].llm_failed + '</span>' : '') + '</span>').join('');
+  const sess = (r.sessions || []).map(s => '<span class="chipx">' + esc(s.label) +
+    ' <b>' + (s.total || 0) + '</b>' + (s.coverage != null ? ' · 覆盖 ' + Math.round(s.coverage * 100) + '%' : '') +
+    (s.flagged ? ' · <span style="color:#ff8f8f">问题 ' + s.flagged + '</span>' : '') + '</span>').join('');
   const recent = (r.recent || []).map(x => '<div class="item"><div class="time">' + clockAt(x.created_at) + '</div>' +
     '<div class="body"><div class="t">' + (x.issues && x.issues.length
       ? '<span style="color:#ff8f8f">' + esc(x.issues.join(' / ')) + '</span>'
       : '<span style="color:#5fe0a0">通过</span>') +
-    ' · ' + esc(x.purpose) + (x.retried ? ' · 已打回重写' : '') + '</div>' +
+    ' · ' + esc(x.purpose) + (x.session ? ' · ' + esc(x.session) : '') +
+    (x.retried ? ' · 已打回重写' : '') + (x.llm_failed ? ' · 降级规则' : '') + '</div>' +
     '<div class="s">' + esc(String(x.final || '').slice(0, 90)) + '</div></div></div>').join('');
+  const cov = r.coverage != null ? Math.round(r.coverage * 100) + '%' : '—';
   $('#review-panel').innerHTML =
     '<div class="trace-stats" style="margin-bottom:10px">' +
     '<span class="ts on">模式 <b>' + esc(modeLabel) + '</b></span>' +
-    '<span class="ts">近24h 审稿 <b>' + (r.total_24h || 0) + '</b></span>' +
+    '<span class="ts">近24h 审稿 <b>' + (r.total_24h || 0) + '</b> / 出门 <b>' + (r.out_messages_24h || 0) + '</b></span>' +
+    '<span class="ts">覆盖率 <b>' + cov + '</b></span>' +
     '<span class="ts">发现问题 <b>' + (r.flagged_24h || 0) + '</b></span>' +
     '<span class="ts">今日 LLM 调用 <b>' + (r.calls_today || 0) + '</b> / ' + (r.max_per_day || '∞') + '</span>' +
     '<span class="ts">走 LLM 的用途 <b>' + esc((r.llm_purposes || []).join(' / ') || '—') + '</b></span></div>' +
+    '<div class="mini" style="margin-bottom:8px;color:var(--faint)">各会话（审稿数 / 覆盖率）</div>' +
+    '<div class="trace" style="margin-bottom:8px">' + (sess || '<span class="chipx">还没有会话</span>') + '</div>' +
     '<div class="trace" style="margin-bottom:8px">' + (chips || '<span class="chipx">近 24h 还没有出过门的话</span>') + '</div>' +
     '<div class="list">' + (recent || '<div class="empty">还没有审稿记录</div>') + '</div>';
 }
@@ -755,11 +1596,297 @@ function renderGroups() {
     '<div class="stats"><div><b>' + (g.people||[]).length + '</b><span>人物</span></div><div><b>' + g.messages + '</b><span>消息</span></div><div><b>' + g.memories + '</b><span>记忆</span></div></div>' +
     '<div class="person-chips">' + (g.people||[]).map(p => '<span class="chip">' + esc(p.name || p.wxid) + '</span>').join('') + '</div></div>').join('') : '<div class="empty">暂无群 Agent 数据</div>';
 }
+function renderHands() {
+  const h = DATA.hands || {};
+  const acts = h.actions || [];
+  const plugins = h.plugins || [];
+  const NS = {web: '网络 / 搜索', reminder: '提醒', note: '记忆', image: '出图', meme: '表情包',
+              bilibili: 'B站 / 音乐 / 视频', desktop: '桌面', shell: '命令', weather: '天气插件'};
+  const exposed = acts.filter(a => a.name !== 'shell.run' || h.allow_shell);
+  $('#h-enabled').textContent = h.enabled ? '开' : '关';
+  $('#h-switches').textContent = 'shell ' + (h.allow_shell ? '开' : '关') + ' · 插件目录 ' + (h.plugins_enabled ? '开' : '关');
+  $('#h-actions').textContent = exposed.length + ' / ' + acts.length;
+  $('#h-actions-sub').textContent = h.enabled ? '内置 + 插件' : '手部已关闭，全部不可用';
+  const ok = plugins.filter(p => p.status === 'ok');
+  const bad = plugins.filter(p => p.status === 'error');
+  $('#h-plugins').textContent = plugins.length ? ok.length + ' / ' + plugins.length : '—';
+  $('#h-plugins-sub').textContent = plugins.length
+    ? (bad.length ? bad.length + ' 个加载失败' : '全部正常')
+    : (h.plugins_enabled ? '目录为空' : '插件目录已关闭');
+
+  // 动作清单：按命名空间分组（web / bilibili / reminder …）
+  const groups = new Map();
+  exposed.forEach(a => {
+    const ns = String(a.name).split('.')[0];
+    if (!groups.has(ns)) groups.set(ns, []);
+    groups.get(ns).push(a);
+  });
+  const rows = [];
+  Array.from(groups.keys()).sort().forEach(ns => {
+    rows.push('<tr class="hand-group"><td colspan="5">' + esc(NS[ns] || ns) + ' · ' + esc(ns) + '</td></tr>');
+    groups.get(ns).forEach(a => {
+      rows.push('<tr class="hand-row"><td><b>' + esc(a.name) + '</b></td>' +
+        '<td>' + (a.source === 'builtin' ? '<span class="st off">内置</span>' : '<span class="st ok">插件</span>') + '</td>' +
+        '<td>' + esc(a.desc || '') + (a.params.length ? '<div class="p">参数：' + esc(a.params.join(' / ')) + '</div>' : '') + '</td>' +
+        '<td class="mono">' + (a.calls || 0) + '</td>' +
+        '<td class="mono">' + (a.last ? clockAt(a.last, true) : '—') + '</td></tr>');
+    });
+  });
+  $('#hands-actions').innerHTML = rows.length
+    ? '<table><thead><tr><th>动作</th><th>来源</th><th>说明</th><th>调用</th><th>最近</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>'
+    : '<div class="empty">手部未开启，没有对外动作</div>';
+
+  // 社区插件
+  $('#hands-plugins').innerHTML = plugins.length ? plugins.map(p => {
+    const st = p.status === 'ok' ? '<span class="st ok">已装载</span>'
+      : p.status === 'disabled' ? '<span class="st off">已禁用</span>'
+      : '<span class="st error">加载失败</span>';
+    const sub = p.status === 'ok'
+      ? esc(p.desc || '无描述') + ' · ' + (p.actions || 0) + ' 个动作'
+      : esc(p.error || '在 settings.plugins_disabled 中');
+    return '<div class="plugin-line"><div class="who"><div class="name">' + esc(p.plugin) + '</div>' +
+      '<div class="s">' + sub + '</div></div>' + st + '</div>';
+  }).join('') : '<div class="empty">plugins/ 目录下还没有插件</div>';
+
+  // 接入能力：用平时的叫法给一张总览（微信 / 搜索 / 语音 …）
+  const w = h.wechat || {};
+  const pr = w.probe || {};
+  const voice = h.voice || {};
+  const byName = {};
+  acts.forEach(a => { byName[a.name] = a; });
+  const calls = names => names.reduce((s, n) => s + ((byName[n] || {}).calls || 0), 0);
+  const reg = names => names.filter(n => byName[n]).length;
+  const CAP = [];
+  const wxSt = !w.channel ? ['未配置', 'off'] : pr.up === false ? ['离线', 'error']
+    : pr.logged_in === true ? ['在线', 'ok'] : pr.logged_in === false ? ['未登录', 'error'] : ['已配置', 'off'];
+  CAP.push(['微信', wxSt, w.channel
+    ? esc(w.channel) + ' · 群聊' + (w.groups_enabled ? '开' : '关') + ' · 仅@' + (w.group_mention_only ? '是' : '否') +
+      '<br>' + (pr.up ? 'hook 已登录' : (pr.up === false ? 'hook 连不上' : 'hook 未探测')) + ' · 桥为独立进程'
+    : 'config.yaml 未配置 wechat 段']);
+  const voiceReply = {mirror: '你发语音她回语音', always: '总是语音回复', never: '只回文字'}[voice.reply] || voice.reply || '—';
+  const vAct = reg(['web.search']);
+  CAP.push(['搜索', [reg(['web.search']) ? '已接入' : '未注册', reg(['web.search']) ? 'ok' : 'off'],
+    'web.search · 联网搜索' + (vAct ? ' · 已调用 ' + calls(['web.search']) + ' 次' : '')]);
+  CAP.push(['网络', [reg(['web.fetch']) ? '已接入' : '未注册', reg(['web.fetch']) ? 'ok' : 'off'],
+    'web.fetch · 抓网页正文 · 已调用 ' + calls(['web.fetch']) + ' 次']);
+  CAP.push(['语音 / 语言', [voice.asr_model ? '已接入' : '未配置', voice.asr_model ? 'ok' : 'off'],
+    'ASR ' + esc(voice.asr_model || '—') + ' · ' + esc(voiceReply) + '<br>上限 ' + (voice.max_chars || '—') + ' 字']);
+  const bi = ['bilibili.watch', 'bilibili.comments', 'bilibili.hot'];
+  CAP.push(['B站 / 音乐', [reg(bi) + ' 个动作', reg(bi) ? 'ok' : 'off'],
+    '视频内容 / 弹幕 / 热评 / 热门 · 已调用 ' + calls(bi) + ' 次']);
+  CAP.push(['出图', [reg(['image.draw']) ? '已接入' : '未注册', reg(['image.draw']) ? 'ok' : 'off'],
+    'image.draw · 文生图 · 已调用 ' + calls(['image.draw']) + ' 次']);
+  CAP.push(['表情包', [reg(['meme.generate']) ? '已接入' : '未注册', reg(['meme.generate']) ? 'ok' : 'off'],
+    'meme.generate · 300+ 模板 · 已调用 ' + calls(['meme.generate']) + ' 次']);
+  CAP.push(['天气', [reg(['weather.get']) ? '插件' : '未装载', reg(['weather.get']) ? 'ok' : 'off'],
+    'weather.get · Open-Meteo 免 key']);
+  CAP.push(['提醒', [reg(['reminder.set']) ? '已接入' : '未注册', reg(['reminder.set']) ? 'ok' : 'off'],
+    'reminder set/list/cancel · 到点桌面通知 + 主动消息']);
+  $('#hands-caps').innerHTML = CAP.map(c => '<div class="cap"><div class="hd"><span class="n">' + esc(c[0]) +
+    '</span><span class="st ' + c[1][1] + '">' + esc(c[1][0]) + '</span></div><div class="d">' + c[2] + '</div></div>').join('');
+
+  // 通道
+  $('#h-wechat').textContent = !w.channel ? '—' : pr.up === false ? '离线'
+    : pr.logged_in === true ? '在线' : pr.logged_in === false ? '未登录' : '已配置';
+  $('#h-wechat-sub').textContent = w.channel
+    ? esc(w.channel) + ' · 群聊' + (w.groups_enabled ? '开' : '关') + ' · 仅@' + (w.group_mention_only ? '是' : '否')
+    : '未配置';
+  const chipx = (label, val, cls) => '<span class="ts ' + (cls || '') + '">' + esc(label) + ' <b>' + esc(val) + '</b></span>';
+  $('#hands-channels').innerHTML = '<div class="chan-line">' +
+    chipx('微信桥', w.channel || '未配置', w.channel ? 'on' : '') +
+    chipx('登录态', pr.up === false ? 'hook 连不上' : pr.logged_in === true ? '已登录' : pr.logged_in === false ? '未登录' : '未探测', pr.logged_in ? 'on' : '') +
+    chipx('群聊', w.groups_enabled ? '开' : '关') +
+    chipx('群里仅@', w.group_mention_only ? '是' : '否') +
+    chipx('启用会话', (w.enabled_chats || []).length ? (w.enabled_chats || []).length + ' 个' : '全部') +
+    chipx('hook', w.base_url || '—') +
+    chipx('语音', (voice.asr_model || '—') + ' / ' + (voice.reply || '—')) +
+    '</div><div class="note-line">启动命令：<code>python -m src.main wechat</code>；配置见 config.yaml 的 <code>wechat:</code> 段。登录态来自 hook 的 /QueryDB/status，桥是否在跑这里看不到。</div>';
+}
+const GW_ORDER = ['energy','social_need','curiosity','care','expression','arousal','valence'];
+const GW_COLORS = {energy:'#6f9cff', social_need:'#5fe0a0', curiosity:'#f3b55c',
+                   care:'#ff9aa5', expression:'#9c7bff', arousal:'#7fd7e8',
+                   valence:'#f3c96b'};
+function gwParse(s, d) { try { return JSON.parse(s); } catch (e) { return d; } }
+function gwNum(v, d) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+function gwChart(events, env) {
+  const W = 760, H = 270, L = 44, R = 18, T = 18, B = 28;
+  const states = events.map(e => gwParse(e.state_after, {}).p || {});
+  let maxAbs = 0;
+  states.forEach(p => GW_ORDER.forEach(d => {
+    maxAbs = Math.max(maxAbs, Math.abs(gwNum(p[d], 0)));
+  }));
+  // 纵轴按实际移动自动缩放（最小 ±0.05）：小幅成长也看得见，
+  // 包络只在当前视野内时画虚线。
+  const span = Math.max(0.05, maxAbs * 1.25);
+  const xs = i => events.length <= 1 ? (L + W - R) / 2
+    : L + (i / (events.length - 1)) * (W - L - R);
+  const ys = v => T + (1 - (gwNum(v, 0) + span) / (2 * span)) * (H - T - B);
+  let g = '<svg class="gw-chart" viewBox="0 0 ' + W + ' ' + H + '">';
+  [-span, -span / 2, 0, span / 2, span].forEach(v => {
+    const y = ys(v);
+    g += '<line x1="' + L + '" y1="' + y.toFixed(1) + '" x2="' + (W - R) + '" y2="' + y.toFixed(1) +
+      '" stroke="' + (v === 0 ? '#2a3446' : '#1a2130') + '"/>';
+    g += '<text x="' + (L - 7) + '" y="' + (y + 3).toFixed(1) + '" fill="#5c6477" font-size="9" text-anchor="end">' +
+      v.toFixed(2) + '</text>';
+  });
+  if (env <= span) {
+    [-env, env].forEach(v => {
+      const y = ys(v);
+      g += '<line x1="' + L + '" y1="' + y.toFixed(1) + '" x2="' + (W - R) + '" y2="' + y.toFixed(1) +
+        '" stroke="#3a2f22" stroke-dasharray="3 3"/>';
+    });
+  }
+  GW_ORDER.forEach(dim => {
+    const pts = states.map((p, i) => [xs(i), ys(p[dim])]);
+    if (!pts.length) return;
+    if (pts.length > 1) {
+      g += '<polyline fill="none" stroke="' + GW_COLORS[dim] + '" stroke-width="1.7" opacity=".9" points="' +
+        pts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ') + '"/>';
+    }
+    const last = pts[pts.length - 1];
+    g += '<circle cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="2.6" fill="' + GW_COLORS[dim] + '"/>';
+  });
+  const fmt = ts => new Date((ts || 0) * 1000).toLocaleDateString('zh-CN', {month: '2-digit', day: '2-digit'});
+  if (events.length) {
+    g += '<text x="' + L + '" y="' + (H - 8) + '" fill="#5c6477" font-size="9">' + fmt(events[0].created_at) + '</text>';
+    if (events.length > 1) {
+      g += '<text x="' + (W - R) + '" y="' + (H - 8) + '" fill="#5c6477" font-size="9" text-anchor="end">' +
+        fmt(events[events.length - 1].created_at) + '</text>';
+    }
+  }
+  return g + '</svg>';
+}
+function renderGrowth() {
+  const g = DATA.growth || {};
+  const gs = (DATA.status && DATA.status.growth) || {};
+  const state = gs.state || {p: {}, target: {}, n: 0};
+  const base = g.baseline || {};
+  const cfg = (DATA.config && DATA.config.reflection) || {};
+  const env = Math.max(0.01, gwNum(cfg.growth_envelope, 0.25));
+  const events = (g.events || []).slice().sort((a, b) => a.id - b.id);
+  $('#g-days').textContent = String((DATA.status && DATA.status.known_days) || 0);
+  $('#g-msgs').textContent = String(DATA.messages || 0);
+  $('#g-mems').textContent = '记忆 ' + ((DATA.memory && DATA.memory.total) || 0);
+  $('#g-reflect').textContent = String(gs.reflection_count || 0);
+  $('#g-n').textContent = String(gwNum(state.n, 0));
+
+  // 收敛曲线
+  if (events.length) {
+    $('#growth-chart').innerHTML = gwChart(events, env);
+  } else {
+    $('#growth-chart').innerHTML = '<div class="pm-empty">还没有成长事件：反思触发后这里会出现收敛曲线</div>';
+  }
+  const p = state.p || {};
+  $('#growth-legend').innerHTML = GW_ORDER.map(dim =>
+    '<span><i style="background:' + GW_COLORS[dim] + '"></i>' + esc(dim) +
+    ' <b>' + gwNum(p[dim], 0).toFixed(3) + '</b></span>').join('');
+
+  // 当前 vs 出厂
+  const rows = GW_ORDER.map(dim => {
+    const b = gwNum(base[dim], 0), off = gwNum(p[dim], 0);
+    const cur = b + off, tgt = b + gwNum((state.target || {})[dim], 0);
+    return '<tr><td>' + esc(dim) + '</td><td class="gw-v">' + b.toFixed(2) +
+      '</td><td class="gw-v">' + cur.toFixed(3) + '</td><td class="gw-v">' + tgt.toFixed(3) +
+      '</td><td class="gw-v ' + (off >= 0 ? 'gw-pos' : 'gw-neg') + '">' +
+      (off >= 0 ? '+' : '') + off.toFixed(3) + '</td></tr>';
+  }).join('');
+  $('#growth-table').innerHTML = '<table><thead><tr><th>维度</th><th style="text-align:right">出厂</th>' +
+    '<th style="text-align:right">当前</th><th style="text-align:right">目标</th>' +
+    '<th style="text-align:right">偏移</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<div class="note-line">包络 ±' + env.toFixed(2) + '；p 与目标 P* 都从角色卡起算。</div>';
+
+  // 长期画像
+  const profile = gs.profile || '';
+  $('#growth-profile').textContent = profile ||
+    ('还没长成：证据 ' + gwNum(state.n, 0) + ' / 40 条起才会进提示词。核心性格和底线始终不参与。');
+  $('#growth-profile-chip').textContent = profile ? '长期画像已生效' : '长期画像未生效';
+
+  // 时间线
+  const list = (g.events || []).slice(0, 40).map(e => {
+    const before = (gwParse(e.state_before, {}).p) || {};
+    const after = (gwParse(e.state_after, {}).p) || {};
+    const ev = gwParse(e.evidence, {});
+    let moves = GW_ORDER.map(d => [d, gwNum(after[d], 0) - gwNum(before[d], 0)])
+      .filter(x => Math.abs(x[1]) >= 0.0005).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 2);
+    let head, sub;
+    if (e.kind === 'reset') {
+      head = '回滚到角色卡';
+      sub = 'p / 目标 / 规则清零，历史保留';
+    } else {
+      head = '反思成长 · n=' + gwNum((gwParse(e.state_after, {})).n, 0);
+      sub = '证据：' + (ev.new_user_msgs || 0) + ' 条新消息 · 情绪 ' +
+        gwNum((ev.active_stats || {}).avg_sentiment, 0).toFixed(2) + ' · 深度 ' +
+        gwNum(ev.depth, 0).toFixed(2) +
+        (moves.length ? ' · 移动 ' + moves.map(m => m[0] + ' ' + (m[1] >= 0 ? '+' : '') + m[1].toFixed(4)).join('、') : '');
+    }
+    return '<div class="gw-ev"><div class="t">' + clockAt(e.created_at, true) + '</div><div class="b">' +
+      '<div class="h">' + esc(head) + '</div><div class="s">' + esc(sub) + '</div></div></div>';
+  }).join('');
+  $('#growth-events').innerHTML = list || '<div class="empty">还没有成长事件</div>';
+}
 function renderAll() {
   if (!DATA) return;
   $('#clock').textContent = DATA.time || '';
   $('#health').textContent = '在线';
-  renderOverview(); renderPeople(); renderMemory(); renderLogs(); renderParams(); renderGroups(); renderReview();
+  renderOverview(); renderPeople(); renderGrowth(); renderMemory(); renderLogs(); renderHands(); renderParams(); renderGroups(); renderReview();
+}
+let HEALTH = null;
+const HCOL = {ok:'#5ee0a0', warn:'#ffcc66', error:'#ff7b85'};
+function hTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(Number(ts) * 1000);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false});
+}
+async function refreshHealth() {
+  try { HEALTH = await api('/health/detail'); renderHealth(); }
+  catch (e) { $('#health-at').textContent = '健康检查失败：' + e.message; }
+}
+function renderHealth() {
+  const d = HEALTH;
+  if (!d) return;
+  $('#health-at').textContent = '检查于 ' + hTime(d.at) + ' · 服务已运行 ' +
+    Math.round(Number((d.server || {}).uptime_seconds || 0) / 60) + ' 分钟';
+  $('#health-checks').innerHTML = (d.checks || []).map(c => {
+    const col = HCOL[c.level] || HCOL.warn;
+    return '<div style="border:1px solid var(--line);border-left:3px solid ' + col +
+      ';border-radius:9px;padding:10px 12px;background:rgba(255,255,255,.018)">' +
+      '<div style="display:flex;align-items:center;gap:8px"><span style="width:7px;height:7px;border-radius:50%;background:' +
+      col + '"></span><b style="font-size:12px">' + esc(c.name) + '</b></div>' +
+      '<div style="color:var(--dim);font-size:11px;margin-top:5px;line-height:1.5">' +
+      esc(c.detail) + '</div></div>';
+  }).join('');
+  const counts = (d.tasks || {}).counts || {};
+  const ctext = Object.keys(counts).length
+    ? Object.entries(counts).map(([k, v]) => k + ' ' + v).join(' · ') : '无';
+  const rows = (d.tasks || {}).recent || [];
+  $('#health-tasks').innerHTML = '<div class="meta2" style="margin-bottom:8px">' + esc(ctext) + '</div>' +
+    (rows.length ? '<table><thead><tr><th>时间</th><th>库</th><th>类型</th><th>阶段</th><th>状态</th><th>错误</th></tr></thead><tbody>' +
+      rows.map(r => '<tr><td class="mono">' + hTime(r.created_at) + '</td><td>' + esc(r.db) +
+        '</td><td>' + esc(r.kind) + '</td><td>' + esc(r.stage || '—') +
+        '</td><td style="color:' + (r.status === 'failed' ? HCOL.error : r.status === 'running' ? HCOL.warn : HCOL.ok) +
+        '">' + esc(r.status) + '</td><td class="mono">' + esc((r.error || '').slice(0, 80)) +
+        '</td></tr>').join('') + '</tbody></table>' : '<div class="empty">还没有任务记录</div>');
+  const oc = (d.outbox || {}).counts || {};
+  const octext = Object.keys(oc).length
+    ? Object.entries(oc).map(([k, v]) => k + ' ' + v).join(' · ') : '无';
+  const failed = (d.outbox || {}).failed || [];
+  $('#health-outbox').innerHTML = '<div class="meta2" style="margin-bottom:8px">' + esc(octext) + '</div>' +
+    (failed.length ? '<table><thead><tr><th>时间</th><th>库</th><th>次数</th><th>错误</th></tr></thead><tbody>' +
+      failed.map(r => '<tr><td class="mono">' + hTime(r.updated_at) + '</td><td>' + esc(r.db) +
+        '</td><td class="mono">' + esc(r.attempts) + '</td><td class="mono">' +
+        esc((r.last_error || '').slice(0, 80)) + '</td></tr>').join('') + '</tbody></table>'
+      : '<div class="empty">没有失败待补发</div>');
+  const tc = (d.triggers || {}).counts || {};
+  const tctext = Object.keys(tc).length
+    ? Object.entries(tc).map(([k, v]) => k + ' ' + v).join(' · ') : '无';
+  const trig = (d.triggers || {}).recent || [];
+  $('#health-triggers').innerHTML = '<div class="meta2" style="margin-bottom:8px">' + esc(tctext) + '</div>' +
+    (trig.length ? '<table><thead><tr><th>时间</th><th>库</th><th>会话</th><th>判定</th><th>原因</th><th>内容</th></tr></thead><tbody>' +
+      trig.map(r => '<tr><td class="mono">' + hTime(r.created_at) + '</td><td>' + esc(r.db) +
+        '</td><td class="mono">' + esc(r.room || '—') + '</td><td>' + esc(r.decision) +
+        '</td><td>' + esc(r.reason || '—') + '</td><td>' + esc((r.preview || '').slice(0, 60)) +
+        '</td></tr>').join('') + '</tbody></table>' : '<div class="empty">还没有触发记录</div>');
 }
 async function refresh() {
   try { DATA = await api('/console-data'); renderAll(); }
@@ -769,8 +1896,10 @@ function show(v) {
   view = v; $$('.view').forEach(x => x.classList.toggle('active', x.id === 'v-' + v));
   if (location.hash !== '#' + v) history.replaceState(null, '', '#' + v);
   $$('nav button').forEach(b => b.classList.toggle('active', b.dataset.view === v));
-  if (v === 'trajectory') refreshTrajectory();
-  const titles = {overview:['总览','状态、关系和生活轨迹'],trajectory:['会话轨迹','消息 / 结构化思考 / 工具调用'],people:['人物卡','她认识的每个人'],memory:['记忆','她记得什么、关于谁'],logs:['主动日志','她为什么开口'],params:['参数','运行中的引擎配置'],groups:['群 Agent','每个群独立的她']};
+  if (v === 'trajectory') refreshTrajectory(true);
+  if (v === 'prompt') refreshPrompt(true);
+  if (v === 'health') refreshHealth();
+  const titles = {overview:['总览','状态、关系和生活轨迹'],trajectory:['会话轨迹','消息 / 结构化思考 / 工具调用'],prompt:['提示词','基线设定 · 各群 / 各人（私聊）的叠加'],people:['人物卡','她认识的每个人'],growth:['成长','她变成了什么样：收敛曲线 / 目标 / 时间线'],memory:['记忆','她记得什么、关于谁'],logs:['主动日志','她为什么开口'],health:['健康','桥 / hook / worker / 任务队列'],hands:['插件','她的手：内置动作 + 社区插件 + 通道'],params:['参数','运行中的引擎配置'],groups:['群 Agent','每个群独立的她']};
   $('#title').textContent = titles[v][0]; $('#subtitle').textContent = titles[v][1];
 }
 $$('nav button').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
@@ -781,22 +1910,70 @@ $('#traj-window').addEventListener('click', e => {
   if (TRAJ) renderTrajectory();
 });
 $('#traj-search').addEventListener('input', () => { if (TRAJ) renderTrajectory(); });
+$('#traj-session').addEventListener('change', e => {
+  TRAJ_SESSION = e.target.value || null;
+  refreshTrajectory();
+});
+$('#prompt-session').addEventListener('change', e => {
+  PROMPT_SESSION = e.target.value || null;
+  refreshPrompt();
+});
+$('#prompt-reload').addEventListener('click', () => refreshPrompt(true));
+$('#pe-open').addEventListener('click', () => {
+  if (PROMPT_EDIT) return;
+  PROMPT_EDIT = true;
+  renderPromptEditor(true);
+  openPeModal();
+});
+const peModalEl = $('#pe-modal');
+if (peModalEl) {
+  peModalEl.addEventListener('click', e => { if (e.target === peModalEl) closePromptEditor(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && peModalEl.classList.contains('open')) closePromptEditor();
+  });
+}
+$('#prompt-copy').addEventListener('click', () => {
+  const btn = $('#prompt-copy');
+  const done = () => { btn.textContent = '已复制'; setTimeout(() => { btn.textContent = '复制实发'; }, 1200); };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(PROMPT_LAST_TEXT).then(done, done);
+});
 $('#drawer-close').addEventListener('click', () => $('#traj-drawer').classList.remove('open'));
 $('#traj-axes').addEventListener('click', e => {
-  const t = e.target.closest('[data-toggle]');
-  if (t) {
-    const id = t.dataset.toggle;
-    if (TRAJ_OFF.has(id)) TRAJ_OFF.delete(id); else TRAJ_OFF.add(id);
-    renderTrajectory(); return;
-  }
   const b = e.target.closest('.ablk');
   if (b && b.dataset.round) jumpRound(b.dataset.round);
 });
 $('#refresh').addEventListener('click', refresh);
+$('#growth-reset').addEventListener('click', async () => {
+  if (typeof confirm === 'function' &&
+      !confirm('回滚成长？漂移 / 目标 / 成长规则会清零，历史事件保留。')) return;
+  try {
+    await api('/settings', { method: 'PUT', body: JSON.stringify({ growth: { reset: true } }) });
+    toast('已回滚成长', 'ok');
+    await refresh();
+  } catch (e) {
+    toast('回滚失败：' + e.message, 'err');
+  }
+});
 $('#auto').addEventListener('click', () => { AUTO = !AUTO; $('#auto').textContent = '自动刷新: ' + (AUTO ? '开' : '关'); });
+$('#prompt-edit').addEventListener('input', () => {
+  if (!PROMPT_EDIT) return; PE_DIRTY = true; peBadge(); peCounters();
+});
+$('#prompt-edit').addEventListener('change', () => {
+  if (!PROMPT_EDIT) return; PE_DIRTY = true; peBadge(); peCounters();
+});
+$('#config-grid').addEventListener('input', () => { PARAMS_DIRTY = true; updateParamsBar(); });
+$('#config-grid').addEventListener('change', () => { PARAMS_DIRTY = true; updateParamsBar(); });
+$('#params-reset').addEventListener('click', resetParams);
 refresh();
 if (location.hash && document.getElementById('v-' + location.hash.slice(1))) show(location.hash.slice(1));
-setInterval(() => { if (AUTO && !document.hidden) { refresh(); if (view === 'trajectory') refreshTrajectory(); } }, 5000);
+let _trajTick = 0;
+setInterval(() => {
+  if (!AUTO || document.hidden) return;
+  refresh();
+  // 轨迹页 15s 刷一次，且抽屉打开时不刷（别把正在看的详情顶掉）
+  if (view === 'trajectory' && (++_trajTick % 3 === 0) && !$('#traj-drawer').classList.contains('open')) refreshTrajectory();
+  if (view === 'health') refreshHealth();
+}, 5000);
 </script>
 </body>
 </html>

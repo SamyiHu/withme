@@ -30,8 +30,12 @@ deploy/start_withme.bat
 deploy/start_hidden.vbs
 deploy/wechat_bot.bat
 deploy/wechat_bot.vbs
+deploy/voice_worker.bat
+deploy/_voice_worker_run.bat
+deploy/health_watch.bat
 
 # ---- 杂项 ----
+tools/gtsinger_alto_prepare.py   # 本地数据准备脚本（含机器路径，暂不发布）
 __pycache__/
 *.pyc
 .pytest_cache/

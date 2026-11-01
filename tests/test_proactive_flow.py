@@ -145,7 +145,8 @@ def test_seed_reproducible_reply():
         t = _at(15, 30)
         r1 = a1.on_user_message("今天天气不错", now=t)
         r2 = a2.on_user_message("今天天气不错", now=t)
-        assert r1["reply"] == r2["reply"], "同 seed 渲染必须可复现"
+        assert r1["reply"] == r2["reply"], (
+            "同 seed 渲染必须可复现：" + repr(r1["reply"]) + " != " + repr(r2["reply"]))
     finally:
         rmtree(tmp1)
         rmtree(tmp2)

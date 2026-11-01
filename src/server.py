@@ -48,8 +48,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from . import health as health_mod
 from .main import Agent
 from .storage import set_setting
+
+STARTED_AT = time.time()
 
 WEB_INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
 WEB_CONSOLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "console.html")
@@ -148,18 +151,32 @@ class AgentHandler(BaseHTTPRequestHandler):
                 self._serve_page(WEB_CONSOLE)
             elif path == "/health":
                 self._reply_json(200, {"ok": True, "api": "v1", "role_id": self.agent.role_id,
-                                       "llm_provider": self.agent.client.name})
+                                       "llm_provider": self.agent.client.name,
+                                       "uptime_seconds": int(time.time() - STARTED_AT)})
             elif not self._authorized():
                 self._reply_json(401, {"error": "unauthorized"})
+            elif path == "/health/detail":
+                data = health_mod.snapshot()
+                data["server"] = {"ok": True,
+                                  "uptime_seconds": int(time.time() - STARTED_AT),
+                                  "role_id": self.agent.role_id}
+                self._reply_json(200, data)
             elif path == "/status":
                 self._reply_json(200, self.agent.status())
             elif path == "/console-data":
                 self._reply_json(200, self.agent.console_snapshot())
+            elif path == "/prompt":
+                session = (parse_qs(u.query).get("session") or [None])[0] or None
+                self._reply_json(200, self.agent.prompt_view(session))
             elif path == "/trajectory":
                 limit = self._query_int(u, "limit", 80)
                 if limit is None:
                     return
-                self._reply_json(200, self.agent.trajectory(limit))
+                q = parse_qs(u.query)
+                session = (q.get("session") or [None])[0] or None
+                meta = (q.get("meta") or ["0"])[0].lower() in ("1", "true", "yes")
+                self._reply_json(200, self.agent.trajectory(
+                    limit, session=session, meta=meta))
             elif path == "/settings":
                 self._reply_json(200, self.agent.get_settings_view())
             elif path == "/reminders":
@@ -260,6 +277,14 @@ class AgentHandler(BaseHTTPRequestHandler):
                     self._reply_json(200, self.agent.apply_config(body))
                 except ValueError as e:
                     self._reply_json(400, {"error": str(e)})
+            elif path == "/persona":
+                body = self._json_body()
+                if body is None:
+                    return
+                try:
+                    self._reply_json(200, self.agent.apply_persona(body))
+                except ValueError as e:
+                    self._reply_json(400, {"error": str(e)})
             elif path == "/proactive":
                 body = self._json_body()
                 if body is None:
@@ -330,17 +355,24 @@ def _parse_images(raw) -> list:
 
 
 def serve(host: str = "127.0.0.1", port: int = 8787, db_path: str = None,
-          interval: float = 60.0, config_dir: str = None):
+          interval: float = None, config_dir: str = None):
     # memory_provider=sqlite：mem0 的本地 qdrant 有跨进程文件锁，微信桥是主使用方，
     # serve 不抢锁（否则启动竞态输的一方会话构造全炸——控制台聊天记忆退化为
     # SQLite 口径，事实仍进同一个库，只是不做向量语义检索）
     agent = Agent(config_dir=config_dir, db_path=db_path, threaded=True,
                   memory_provider="sqlite")
+    if interval:   # 命令行显式给了间隔：写回配置，控制台看到的也就是真正在跑的
+        agent.config.tick.fast_seconds = float(interval)
     httpd = make_server(agent, host, port)
     stop = threading.Event()
 
     def ticker():
-        while not stop.wait(interval):
+        # 每轮重读 tick.fast_seconds：控制台改完下一轮就生效（旧实现把启动时的
+        # interval 固定死，页面写着"可热改"其实改不动）。
+        while not stop.is_set():
+            delay = max(5.0, float(agent.config.tick.fast_seconds or 60))
+            if stop.wait(delay):
+                break
             try:
                 result = agent.evaluate_proactive()
                 sent = result.get("sent")

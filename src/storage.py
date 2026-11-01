@@ -3,7 +3,7 @@ import json
 import os
 import sqlite3
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 10
 
 # 未来版本迁移：追加 (目标版本, SQL) 即可；init_db 会按序应用
 MIGRATIONS = [
@@ -23,6 +23,24 @@ MIGRATIONS = [
         "CREATE TABLE IF NOT EXISTS person_cards (person_id INTEGER PRIMARY KEY, affinity REAL NOT NULL DEFAULT 0.3, familiarity REAL NOT NULL DEFAULT 0.1, trust_identity REAL NOT NULL DEFAULT 0.5, trust_benevolence REAL NOT NULL DEFAULT 0.5, trust_competence REAL NOT NULL DEFAULT 0.4, trust_disclosure REAL NOT NULL DEFAULT 0.1, caution REAL NOT NULL DEFAULT 0.3, attachment REAL NOT NULL DEFAULT 0.0, authority TEXT NOT NULL DEFAULT 'none', updated_at REAL NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1);"
         "CREATE TABLE IF NOT EXISTS person_events (id INTEGER PRIMARY KEY AUTOINCREMENT, role_id TEXT NOT NULL, person_id INTEGER NOT NULL, event_type TEXT NOT NULL, weight REAL NOT NULL DEFAULT 0, content TEXT NOT NULL DEFAULT '', source_message_id INTEGER, value_before TEXT, value_after TEXT, created_at REAL NOT NULL);"
         "CREATE TABLE IF NOT EXISTS person_facts (id INTEGER PRIMARY KEY AUTOINCREMENT, role_id TEXT NOT NULL, person_id INTEGER NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'claim', confidence REAL NOT NULL DEFAULT 0.5, source_message_id INTEGER, created_at REAL NOT NULL);"),
+    # v7：聊天命令改参数的审计（谁/在哪个会话/从多少改到多少），/undo 靠它回滚。
+    (7, "CREATE TABLE IF NOT EXISTS config_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, role_id TEXT NOT NULL, room TEXT NOT NULL DEFAULT '', scope TEXT NOT NULL, name TEXT NOT NULL, old_value TEXT, new_value TEXT, source TEXT NOT NULL DEFAULT 'chat', ok INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL);"
+        "CREATE INDEX IF NOT EXISTS idx_config_audit_role_time ON config_audit(role_id, created_at DESC);"),
+    # v8：成长账本（append-only），记录每次成长外环推进前后的 p / P* / 证据量。
+    (8, "CREATE TABLE IF NOT EXISTS growth_events (id INTEGER PRIMARY KEY AUTOINCREMENT, role_id TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'reflection', evidence TEXT NOT NULL DEFAULT '{}', state_before TEXT NOT NULL DEFAULT '{}', state_after TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL);"
+        "CREATE INDEX IF NOT EXISTS idx_growth_events_role_time ON growth_events(role_id, created_at DESC);"),
+    # v9：任务 + 出站队列。表结构由 schema.sql 统一创建（旧库也会执行），
+    # 这里只补索引，保证从 v8 升级时也能命中同样的索引。
+    (9, "CREATE INDEX IF NOT EXISTS idx_tasks_role_time ON tasks(role_id, created_at DESC);"
+        "CREATE INDEX IF NOT EXISTS idx_tasks_role_status ON tasks(role_id, status, updated_at DESC);"
+        "CREATE INDEX IF NOT EXISTS idx_tasks_idem ON tasks(role_id, idempotency_key, status);"
+        "CREATE INDEX IF NOT EXISTS idx_outbox_role_status ON outbox(role_id, status, next_retry_at);"
+        "CREATE INDEX IF NOT EXISTS idx_outbox_dedupe ON outbox(role_id, dedupe_key, status);"),
+    # v10：入站触发审计。表由 schema.sql 统一创建，这里只补索引。
+    (10, "CREATE INDEX IF NOT EXISTS idx_triggers_role_time"
+         " ON triggers(role_id, created_at DESC);"
+         "CREATE INDEX IF NOT EXISTS idx_triggers_role_hash"
+         " ON triggers(role_id, text_hash, created_at DESC);"),
 ]
 
 

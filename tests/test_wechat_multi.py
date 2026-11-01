@@ -32,6 +32,7 @@ def _mbridge(tmp, cfg=None, asr=None):
                      BridgeState(os.path.join(tmp, "state.json")),
                      asr=asr or FakeASR("语音内容"), media_dir=media, log=lambda m: None)
     b.async_dispatch = False   # 测试同步直调，断言无需等待
+    b._started_at = time.time() - 3600   # 当成跑了很久：跳过启动静默期（warmup）
     return b
 
 
@@ -170,6 +171,14 @@ def test_split_bubbles():
     # 已是两短句 -> 不强拆
     two = "行吧。那先这样咯。"
     assert len(split_bubbles(two, max_bubbles=3)) <= 2
+    # 真实病例（2026-10-29）：43 字双行文本 ≤48，旧快速路径原样单发——
+    # 微信呈现为"一条消息中间空一行"。含换行必须拆成两条气泡。
+    two_line = ("行行行，收到收到，这话题翻篇翻篇\n\n"
+                "那聊点别的？你中午吃了没，拉瓦萨券最后搞到没")
+    out2 = split_bubbles(two_line)
+    assert len(out2) == 2, out2
+    assert out2[0] == "行行行，收到收到，这话题翻篇翻篇", out2
+    assert all("\n" not in b for b in out2), out2
 
 
 def test_humanized_reply_delay_and_split():
@@ -274,7 +283,11 @@ def test_emoji_image_recognized(tmp_mode="real"):
         text, images = calls[0]
         expect = _b64.b64encode(
             bytes([0xFF, 0xD8, 0xFF]) + b"JPEGDATA" * 100).decode()
-        assert images and len(images) == 3 and all(i["b64"] == expect for i in images)
+        # 一个动图表情包 = 一条图片消息：首帧主图 + 其余帧采样组（不再是 3 张独立图）
+        assert images and len(images) == 1, images
+        im = images[0]
+        assert im["b64"] == expect and im.get("animated") is True
+        assert len(im.get("frames") or []) == 2 and all(f == expect for f in im["frames"])
         assert text.find("[表情包]") < 0, "拿到图就不该用占位符"
     finally:
         if old_db5:
@@ -335,6 +348,202 @@ def test_local_agent_accepts_b64_images():
         rmtree(tmp)
 
 
+def test_animated_emoji_single_vision_call():
+    """动图表情包 = 一次视觉调用：采样帧走同一条消息的 frames part，
+    指令言明"同一张动图"——模型不再把首/中/尾帧当成三张独立图片。"""
+    import base64
+    tmp = make_tmpdir()
+    old_db = os.environ.get("AGENT_DB_PATH")
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "agent.db")
+    try:
+        calls = []
+
+        class VisionClient:
+            name = "fake"
+
+            def __init__(self):
+                self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0,
+                                   "estimated": True}
+
+            def render(self, prompt, seed):
+                return "这表情包绝了"
+
+            def render_raw(self, text, seed, *, temperature=0.3, max_tokens=250):
+                return ""
+
+            def render_image(self, text, image_bytes, mime="image/jpeg",
+                             seed=0, max_tokens=500, frames=None):
+                calls.append((text, bytes(image_bytes), list(frames or [])))
+                return "一只猫拍手鼓掌的动图"
+
+        agent = Agent(config_dir=repo_config_dir(),
+                      db_path=os.path.join(tmp, "agent.db"),
+                      llm_client=VisionClient())
+        f1 = bytes([0xFF, 0xD8, 0xFF]) + b"frame1" * 30
+        f2 = b"frame2" * 30
+        f3 = b"frame3" * 30
+        out = agent.on_user_message("哈哈这个", now=1000.0, images=[{
+            "b64": base64.b64encode(f1).decode(), "mime": "image/jpeg",
+            "animated": True,
+            "frames": [base64.b64encode(f2).decode(),
+                       base64.b64encode(f3).decode()]}])
+        assert out["reply"]
+        assert len(calls) == 1, "一个动图表情包只该有一次视觉调用"
+        text, main, frames = calls[0]
+        assert main == f1
+        assert "动图" in text and "不是多张图" in text, text
+        assert [b for b, _ in frames] == [f2, f3], "采样帧必须原样到达视觉端"
+        row = agent.conn.execute(
+            "SELECT content FROM messages WHERE role_id=? AND sender='user' "
+            "ORDER BY id DESC LIMIT 1", ("xiaoman",)).fetchone()
+        assert "拍手鼓掌" in row["content"]
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
+def test_skip_marker_never_leaks():
+    """[skip] 是内部控制标记。真实泄露病例（2026-10-29，AI技术冲了群）：
+    模型写 "[skip] 一碗确实悬…"（标记+正文），旧逻辑只认完全相等，标记原样
+    发到微信。修复：前缀标记剥掉——只剩标记=跳过；带正文=发剥掉后的正文。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.get("AGENT_DB_PATH")
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "agent.db")
+    try:
+        class SkipClient:
+            name = "fake"
+            last_usage = {"prompt_tokens": 0, "completion_tokens": 0, "estimated": True}
+
+            def __init__(self, text):
+                self.text = text
+
+            def render(self, prompt, seed):
+                return self.text
+
+            def render_raw(self, text, seed, *, temperature=0.3, max_tokens=250):
+                return ""
+
+        agent = Agent(config_dir=repo_config_dir(),
+                      db_path=os.path.join(tmp, "agent.db"),
+                      llm_client=SkipClient("[skip] 一碗确实悬，天冷了饭量骗人的"))
+        out = agent.on_user_message("今天吃了几碗", now=1000.0)
+        assert out["reply"] == "一碗确实悬，天冷了饭量骗人的", out["reply"]
+        assert "[skip]" not in out["reply"]
+        # 只有标记 = 跳过：不发、不落库
+        agent2 = Agent(config_dir=repo_config_dir(),
+                       db_path=os.path.join(tmp, "agent2.db"),
+                       llm_client=SkipClient("[skip]"))
+        out2 = agent2.on_user_message("群里在聊别人的事", now=1000.0)
+        assert out2["reply"] == "" and out2["meta"].get("skipped") is True
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
+def test_chime_skips_message_aimed_at_others():
+    """群里@别人的定向对话，AI 不插嘴——对话对象判断（meta.at_names）在旁听
+    入库时就已算好，插嘴门槛直接复用。真实病例（2026-10-29）：主人@marblue
+    "到点走不"被插嘴接成"走啊，说好05就05"，看起来像没@也乱回。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.pop("AGENT_DB_PATH", None)
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
+    try:
+        b = _mbridge(tmp, _mcfg(groups_enabled=True))
+        b.state.owner_wxid = OWNER
+        room = "457@chatroom"
+
+        class GroupMsg(FakeMsg):
+            def __init__(self, content="", sender=OWNER, xml=""):
+                super().__init__(type=1, content=content, sender=sender, roomid=room)
+                self.at_me = False
+                self.xml = xml
+
+            def from_group(self):
+                return True
+
+        # 主人 @ 别人：旁听入库（带 at_names），插嘴必须跳过
+        xml = "<atuserlist><![CDATA[wxid_friend]]></atuserlist>"
+        b.handle_message(GroupMsg("@marblue 到点走不", sender=OWNER, xml=xml))
+        agent = b.pool.agents[room]
+        calls = []
+        agent.chime_in = lambda *a, **kw: calls.append(1) or ""
+        assert b.chime_check(room, now=time.time() + 5) is True
+        assert not calls, "定向@别人的消息不该触发插嘴判断"
+        # @别人但明显是给大家看的（广播信号）-> 交给模型判断
+        b.handle_message(GroupMsg("@marblue 大家今晚聚餐啊", sender=OWNER, xml=xml))
+        assert b.chime_check(room, now=time.time() + 9) is True
+        assert calls, "@别人的广播型消息应进入插嘴判断"
+        calls.clear()
+        # 对照：群友普通消息（无@）照常进入插嘴判断
+        b.handle_message(GroupMsg("你们几点走", sender="wxid_friend"))
+        assert b.chime_check(room, now=time.time() + 13) is True
+        assert calls, "普通群聊消息应进入插嘴判断"
+        for a in b.pool.agents.values():
+            a.conn.close()
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
+def test_bare_mention_stripped_not_used_as_content():
+    """只@不说话（"@小满"）：剥成空串+提示应一声，不能把昵称当正文让模型
+    拿旧话题凑答案（2026-10-29 实测：@ 一下就回了上一个话题的股市分析）。"""
+    from src.wechat_bridge import WeChatBridge
+    sep = chr(0x2005)
+    assert WeChatBridge._strip_group_noise("@小满") == ""
+    assert WeChatBridge._strip_group_noise("@小满" + sep) == ""
+    assert WeChatBridge._strip_group_noise("@小满" + sep + "在吗") == "在吗"
+    assert WeChatBridge._strip_group_noise("@小满 在吗") == "在吗"
+
+
+def test_bare_at_with_wxid_prefix_gets_ack():
+    """裸@带 wxid 前缀（真实形态 "wxid_xxx:
+@小满 "）：不能静默丢弃。
+    真实病例（2026-10-29 家人群）：连发两条 @小满 没回，像机器人没启动——
+    旧实现跳前缀检查 _raw.startswith("@") 永远不成立，提示没注入、消息被丢。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.pop("AGENT_DB_PATH", None)
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
+    try:
+        b = _mbridge(tmp, _mcfg(groups_enabled=True,
+                                group_self_aliases=["小满", "机器人"]))
+        b.state.owner_wxid = OWNER
+        room = "457@chatroom"
+
+        class GroupMsg(FakeMsg):
+            def __init__(self, content="", sender=OWNER):
+                super().__init__(type=1, content=content, sender=sender, roomid=room)
+                self.at_me = True
+
+            def from_group(self):
+                return True
+
+        b.handle_message(GroupMsg("wxid_owner:\n@小满" + chr(0x2005)))
+        texts = [t for t in b.channel.texts if t[1] == room]
+        assert texts, "裸@必须回一声，不能静默丢弃"
+        row = b.pool.agents[room].conn.execute(
+            "SELECT content FROM messages WHERE sender='user' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["content"] == "@小满", "裸@保留原样入库，不伪造用户发言"
+        for a in b.pool.agents.values():
+            a.conn.close()
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
 def test_group_mention_routes_and_labels():
     """群聊：被@（at_me 硬信号）才回；文本去掉 wxid 前缀与@称呼、标注说话人；
     回复发到群；群绝不绑定为「主人」。"""
@@ -342,7 +551,8 @@ def test_group_mention_routes_and_labels():
     old_db = os.environ.get("AGENT_DB_PATH")
     os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
     try:
-        b = _mbridge(tmp, _mcfg(groups_enabled=True))
+        b = _mbridge(tmp, _mcfg(groups_enabled=True,
+                                group_self_aliases=["小满", "机器人"]))
         b.state.owner_wxid = OWNER
         sep5 = chr(0x2005)
 
@@ -372,14 +582,32 @@ def test_group_mention_routes_and_labels():
         b.handle_message(GroupMsg(content="wxid_friend: 有人吗", at_me=False))
         assert len(b.pool.agents) == n_agents
         assert len([t for t in b.channel.texts if t[1] == room]) == len(texts)
-        # 主人没被@也回（群里主人随时可叫）
-        b.handle_message(GroupMsg(content="wxid_owner: 看看", sender=OWNER, at_me=False))
+        # 主人叫名字 = 对话对象是我：回
+        b.handle_message(GroupMsg(content="wxid_owner: 小满 看看", sender=OWNER, at_me=False))
         assert len([t for t in b.channel.texts if t[1] == room]) > len(texts)
         owner_row = b.pool.agents[room].conn.execute(
             "SELECT content, meta FROM messages WHERE sender='user' ORDER BY id DESC LIMIT 1"
         ).fetchone()
-        assert owner_row["content"] == "看看", "主人正文也不带角色前缀"
+        assert owner_row["content"] == "小满 看看", "主人正文也不带角色前缀"
         assert json.loads(owner_row["meta"] or "{}").get("speaker_role") == "owner"
+        # 主人跟群友聊天、没叫 AI（无@/名字/你/问号）-> 旁听不接
+        # （2026-10-29 实测：主人和 marblue/AW 聊工作，AI 每条都插一句）
+        n_before = len([t for t in b.channel.texts if t[1] == room])
+        b.handle_message(GroupMsg(content="wxid_owner: 一个品质两个研发",
+                                  sender=OWNER, at_me=False))
+        assert len([t for t in b.channel.texts if t[1] == room]) == n_before,             "主人跟别人聊天不该接"
+        # 指令句式（无"你"无问号）也算对我说："用mcp" 必须回
+        # （2026-10-29 实测：主人回"用mcp"，被当旁听不吭声了）
+        n_before2 = len([t for t in b.channel.texts if t[1] == room])
+        b.handle_message(GroupMsg(content="wxid_owner: 用mcp", sender=OWNER, at_me=False))
+        assert len([t for t in b.channel.texts if t[1] == room]) > n_before2,             "指令句式必须命中回复路径"
+        # 接话词（纯延续指令）也必须走回复："继续吧""还有呢"——
+        # 靠插嘴兜底会因冷却漏回（2026-10-29 AI技术群实测）
+        for cont in ("继续吧", "还有呢", "分点一口气说完吧", "都一口气讲完"):
+            n0 = len([t for t in b.channel.texts if t[1] == room])
+            b.handle_message(GroupMsg(content="wxid_owner: " + cont,
+                                      sender=OWNER, at_me=False))
+            assert len([t for t in b.channel.texts if t[1] == room]) > n0, cont
         # 系统消息（10000 邀请通知）不回
         b.handle_message(GroupMsg(type=10000, content='"X"邀请你加入了群聊'))
         # 群绝不抢主人绑定
@@ -443,7 +671,7 @@ def test_group_proactive_mentions_last_speaker():
             def __init__(self):
                 self.evaluated = 0
 
-            def evaluate_proactive(self):
+            def evaluate_proactive(self, observe=False):
                 self.evaluated += 1
                 return {"sent": {"text": "群里冒个泡", "level": 2}}
 
@@ -467,6 +695,47 @@ def test_group_proactive_mentions_last_speaker():
         assert not any(t[0].startswith("@") and t[1] == OWNER for t in b.channel.texts)
         assert ga.evaluated == 2 and pa.evaluated == 1
     finally:
+        rmtree(tmp)
+
+
+def test_enabled_chats_scope():
+    """启用范围（wechat.enabled_chats）：非空=只处理列出的会话。
+    2026-10-29 需求：只启用鱼群，其他群/私聊静默。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.pop("AGENT_DB_PATH", None)
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
+    try:
+        room = "50107328065@chatroom"
+        b = _mbridge(tmp, _mcfg(groups_enabled=True,
+                                group_self_aliases=["小满", "机器人"],
+                                enabled_chats=[room]))
+        b.state.owner_wxid = OWNER
+
+        class GroupMsg(FakeMsg):
+            def __init__(self, roomid):
+                super().__init__(type=1, content="wxid_friend: 闲聊一句",
+                                 sender="wxid_friend", roomid=roomid)
+                self.at_me = False
+
+            def from_group(self):
+                return True
+
+        # 范围外的群：不建 Agent、不处理
+        b.handle_message(GroupMsg("999999@chatroom"))
+        assert "999999@chatroom" not in b.pool.agents
+        # 范围内的群：正常建 Agent 并旁听入库
+        b.handle_message(GroupMsg(room))
+        assert room in b.pool.agents
+        n = b.pool.agents[room].conn.execute(
+            "SELECT COUNT(*) FROM messages").fetchone()[0]
+        assert n >= 1
+        for a in b.pool.agents.values():
+            a.conn.close()
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
         rmtree(tmp)
 
 
@@ -496,6 +765,16 @@ def test_group_overhear_without_reply():
             "SELECT content, meta FROM messages WHERE sender='user'").fetchall()
         assert any("今天天气不错" in r["content"] and "overheard" in (r["meta"] or "")
                    for r in rows), "旁听内容要入库且带标记"
+        # 长消息不腰斩（曾 text[:200] 把长消息截断入库）：常规长度全量、
+        # 防刷屏上限之外显式带截断标记——模型不能把半句当整句
+        b.handle_message(GroupMsg(content="wxid_friend: " + "今天" * 150))    # 300 字
+        b.handle_message(GroupMsg(content="wxid_friend: " + "啊" * 4500))     # 超上限
+        rows2 = b.pool.agents[room].conn.execute(
+            "SELECT content FROM messages WHERE sender='user' ORDER BY id").fetchall()
+        ok_stored = [r["content"] for r in rows2 if "今天今天" in r["content"]]
+        assert ok_stored and len(ok_stored[0]) >= 300, "300 字消息必须全量入库"
+        over_stored = [r["content"] for r in rows2 if "啊啊" in r["content"]]
+        assert over_stored and "超长已截断" in over_stored[0], "超长必须显式带截断标记"
         for a in b.pool.agents.values():
             a.conn.close()
     finally:
@@ -506,22 +785,124 @@ def test_group_overhear_without_reply():
         rmtree(tmp)
 
 
+def test_owner_at_other_is_not_a_command():
+    """主人 @ 别人 = 在跟别人说话：不命中、不执行，addressee=群聊、@名字入库。
+
+    2026-10-28 实测：主人说「你是大肥鱼，你不要说话」(@大肥鱼)，AI 当成给自己的
+    指令，自己闭嘴了——身份认知混乱的根源是"主人的每句话都算对我说"。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.get("AGENT_DB_PATH")
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
+    try:
+        import json as _json
+        import sqlite3
+        import threading
+        b = _mbridge(tmp, _mcfg(groups_enabled=True))
+        b.state.owner_wxid = OWNER
+        room = "457@chatroom"
+
+        class FakeAgent:
+            role_id = "g"
+            _lock = threading.RLock()
+
+            def __init__(self):
+                self.conn = sqlite3.connect(":memory:")
+                self.conn.row_factory = sqlite3.Row
+                self.conn.execute(
+                    "CREATE TABLE messages(id INTEGER PRIMARY KEY, role_id TEXT,"
+                    " sender TEXT, content TEXT, meta TEXT, created_at REAL,"
+                    " speaker TEXT, speaker_role TEXT)")
+
+        fa = FakeAgent()
+        b.pool.agents[room] = fa
+        hits = []
+        b._multi_message = lambda msg, peer: hits.append(
+            (getattr(msg, "_addressee", ""), list(getattr(msg, "_at_names", []))))
+
+        class GroupMsg(FakeMsg):
+            def __init__(self, content="", sender=OWNER, xml=""):
+                super().__init__(content=content, sender=sender, roomid=room)
+                self.at_me = False
+                self.xml = xml
+
+            def from_group(self):
+                return True
+
+        other = "wxid_someone"
+        b.handle_message(GroupMsg("@大肥鱼 你别说话了",
+                                  xml="<atuserlist><![CDATA[%s]]></atuserlist>" % other))
+        assert not hits, "主人@别人不该命中回复路径"
+        rows = fa.conn.execute(
+            "SELECT content, meta, speaker_role FROM messages WHERE sender='user'").fetchall()
+        assert rows, "旁听也要入库"
+        assert rows[-1]["speaker_role"] == "owner", "主人的话不能被记成群友"
+        meta = _json.loads(rows[-1]["meta"])
+        assert meta["addressee"] == "群聊", meta
+        assert meta.get("at_names"), "要记住 @ 了谁"
+
+        # @ 我自己：命中，addressee=你
+        b.handle_message(GroupMsg("@阿满 你说",
+                                  xml="<atuserlist>wxid_bot</atuserlist>"))
+        assert hits and hits[0][0] == "你", hits
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
+def test_sticker_marker_sends_image():
+    """回复里的 [sticker:情绪词] 要发成真表情图，正文里不留协议标记。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.get("AGENT_DB_PATH")
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
+    try:
+        from test_stickers import FakeStore
+        b = _mbridge(tmp, _mcfg())
+        b.state.owner_wxid = OWNER
+        store = FakeStore(os.path.join(tmp, "stickers"))
+
+        class Agent:
+            role_id = "g"
+            stickers = store
+
+            def on_user_message(self, text, **kw):
+                return {"reply": "笑死\n[sticker:摸鱼]", "addon": None, "meta": {}}
+
+        b.pool.agents[OWNER] = Agent()
+        b._multi_chat("哈哈", None, False, OWNER)
+        assert b.channel.images, "表情图没发出去"
+        assert b.channel.images[0][0].endswith(".png"), "static 模式发缩略图"
+        assert b.channel.texts and all("[sticker" not in t[0] for t in b.channel.texts)
+        assert any("笑死" in t[0] for t in b.channel.texts)
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
 def test_group_chime_gates_and_decision():
-    """群智能插嘴：触发只数"未被回复的旁听"（主人的消息已回复，不攒门）；
-    单条旁听+静默 6s 即问 AI；冷却期/话题冷掉都不问（不烧 token）。"""
+    """群插嘴门控（新）：有一条没人接的话 + 静默 4s 就判一次；
+    主人消息不攒门；冷却只拦"自发插话"；话题冷掉不翻旧账。"""
     tmp = make_tmpdir()
     old_db = os.environ.get("AGENT_DB_PATH")
     os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
     try:
         b = _mbridge(tmp, _mcfg(groups_enabled=True,
-                                group_chime_cooldown_seconds=480,
+                                group_self_aliases=["小满", "机器人"],
+                                group_chime_cooldown_seconds=60,
                                 group_chime_daily_max=12))
+        b._send_reply = lambda text, peer, **kw: b.channel.texts.append((text, peer))
         b.state.owner_wxid = OWNER
         room = "457@chatroom"
 
         class ChimeAgent:
             def __init__(self):
                 self.decisions = 0
+                self.last_chime_meta = {"to_me": False, "worth": 0.0}
                 import sqlite3
                 self.conn = sqlite3.connect(":memory:")
                 self.conn.row_factory = sqlite3.Row
@@ -535,7 +916,7 @@ def test_group_chime_gates_and_decision():
 
             def chime_in(self, dialogue, now=None, **kwargs):
                 self.decisions += 1
-                return "哈哈这梗我接一下" if self.decisions == 1 else ""
+                return "哈哈这梗我接一下"
 
         class GroupMsg(FakeMsg):
             def __init__(self, content="", sender=FRIEND, at_me=False):
@@ -547,28 +928,31 @@ def test_group_chime_gates_and_decision():
 
         ca = ChimeAgent()
         b.pool.agents[room] = ca
-        # 主人消息（有回复）不攒插嘴门
-        b.handle_message(GroupMsg("主人说话", sender=OWNER, at_me=False))
+        # 主人消息（带名字=对我说话，走回复路径）不攒插嘴门
+        b.handle_message(GroupMsg("小满在吗", sender=OWNER, at_me=False))
         assert not b.chime_check(room, now=time.time() + 10)
         assert ca.decisions == 0
-        # 单条群友旁听：碎碎念不触发（要攒 2 条成一小轮）
+        # 单条群友消息 + 静默窗（主人那条刚占过 20s 静默）：判一次（不再要求攒两条）
         b.handle_message(GroupMsg("wxid_friend: 闲聊一句"))
-        now = time.time() + 10
-        assert not b.chime_check(room, now=now)
-        assert ca.decisions == 0
-        # 攒到 2 条旁听 + 静默 6s：问 AI，AI 接话 -> 发到群
-        b.handle_message(GroupMsg("wxid_friend: 又聊一句"))
-        assert b.chime_check(room, now=now + 8)
+        now = time.time()
+        assert b.chime_check(room, now=now + 25)
         assert ca.decisions == 1
         assert any(t[1] == room and "接一下" in t[0] for t in b.channel.texts)
-        # 冷却期内再旁听再问：门控直接消化，不问 AI
+        # 冷却期（60s）内再聊：照样判断，但"自发插话"不发
         b.handle_message(GroupMsg("wxid_friend: 又聊一句"))
+        n_texts = len(b.channel.texts)
+        assert b.chime_check(room, now=now + 45)
+        assert ca.decisions == 2
+        assert len(b.channel.texts) == n_texts, "冷却期只判不发"
+        # 冷却过了 + 话题还热：判完就发
         b.handle_message(GroupMsg("wxid_friend: 再聊一句"))
-        assert not b.chime_check(room, now=now + 30)
-        assert ca.decisions == 1
-        # 冷却过了但话题冷掉（>180s）：不插旧梗
-        assert not b.chime_check(room, now=now + 600)
-        assert ca.decisions == 1
+        assert b.chime_check(room, now=now + 95)
+        assert ca.decisions == 3
+        assert len(b.channel.texts) > n_texts
+        # 话题冷掉（>240s）：不翻旧账
+        b.handle_message(GroupMsg("wxid_friend: 隔了很久才回"))
+        assert not b.chime_check(room, now=now + 400)
+        assert ca.decisions == 3
     finally:
         if old_db:
             os.environ["AGENT_DB_PATH"] = old_db
@@ -577,237 +961,50 @@ def test_group_chime_gates_and_decision():
         rmtree(tmp)
 
 
-
-
-def test_voice_marker_forces_voice_reply():
-    """模型按需点语音：回复以 [语音] 开头 -> 剥标记走语音链；普通回复仍走文字。"""
+def test_group_chime_judges_mention_and_waits_after_reply():
+    """①"提到我"不再挡住判断；②刚发过话 20s 内不判；③点名不受冷却限制。"""
     tmp = make_tmpdir()
     old_db = os.environ.get("AGENT_DB_PATH")
     os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
     try:
-        b = _mbridge(tmp)
-        b.state.owner_wxid = OWNER
-        b._tts_bytes = lambda text: b"FAKEMP3" + b"x" * 400   # 本地 TTS 假件
-        import src.silk_audio as silk_mod
-        orig = silk_mod.mp3_to_silk
-        silk_mod.mp3_to_silk = lambda audio, out, work_dir=None: (
-            open(out, "wb").write(b"#!SILK_V3xx"),
-            {"duration_ms": 1500, "path": out})[1]
-        try:
-            # FakeWcf 走 send_voice mp3 卡片：直接看 files/voice 调用
-            b.channel.chat_result = None
-            class _Agent2:
-                role_id = "xiaoman"
-                _lock = __import__("threading").RLock()
-                class conn:
-                    @staticmethod
-                    def execute(*a, **k):
-                        class R:
-                            def fetchall(s): return []
-                        return R()
-                def on_user_message(self, text, now=None, images=None, from_owner=True,
-                        speaker="", speaker_role="", speaker_wxid="", addressee="群聊"):
-                    return {"reply": "[语音] 好嘞，那我露一手", "addon": None,
-                            "meta": {}}
-            b.pool.agents[OWNER] = _Agent2()
-            b.handle_message(FakeMsg(content="用语音回答我", sender=OWNER))
-            assert b.channel.silks or b.channel.files, "[语音] 标记必须走语音链"
-            texts = [t[0] for t in b.channel.texts]
-            assert all(not str(x).startswith("[语音]") for x in texts), "标记必须剥掉"
-        finally:
-            silk_mod.mp3_to_silk = orig
-    finally:
-        if old_db:
-            os.environ["AGENT_DB_PATH"] = old_db
-        else:
-            os.environ.pop("AGENT_DB_PATH", None)
-        rmtree(tmp)
-
-
-
-def test_explicit_voice_request_forces_voice():
-    """代码级意图兜底：模型不吐 [语音] 标记、甚至嘴硬'只能打字'，
-    只要对方明确要语音，桥强制走语音链。"""
-    tmp = make_tmpdir()
-    old_db = os.environ.get("AGENT_DB_PATH")
-    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
-    try:
-        b = _mbridge(tmp)
-        b.state.owner_wxid = OWNER
-        b._tts_bytes = lambda text: b"FAKEMP3" + b"x" * 400
-        import src.silk_audio as silk_mod
-        orig = silk_mod.mp3_to_silk
-        silk_mod.mp3_to_silk = lambda audio, out, work_dir=None: (
-            open(out, "wb").write(b"#!SILK_V3xx"),
-            {"duration_ms": 1500, "path": out})[1]
-        try:
-            from test_wechat_bridge import FakeWcf
-
-            class _Agent3:
-                role_id = "xiaoman"
-                _lock = __import__("threading").RLock()
-
-                class conn:
-                    @staticmethod
-                    def execute(*a, **k):
-                        class R:
-                            def fetchall(s):
-                                return []
-                        return R()
-
-                def on_user_message(self, text, now=None, images=None, from_owner=True,
-                        speaker="", speaker_role="", speaker_wxid="", addressee="群聊"):
-                    # 模型嘴硬版：普通文字，无标记
-                    return {"reply": "我发不了语音，只能打字", "addon": None,
-                            "meta": {}}
-            b.pool.agents[OWNER] = _Agent3()
-            b.handle_message(FakeMsg(content="这句话用语音发给我", sender=OWNER))
-            assert b.channel.silks or b.channel.files, "明确要语音必须走语音链"
-        finally:
-            silk_mod.mp3_to_silk = orig
-    finally:
-        if old_db:
-            os.environ["AGENT_DB_PATH"] = old_db
-        else:
-            os.environ.pop("AGENT_DB_PATH", None)
-        rmtree(tmp)
-
-
-
-def test_name_mention_grants_chime_eligibility():
-    """叫名字（没@）= 软点名：单条旁听也要进插嘴决策，不接就是冷暴力。"""
-    tmp = make_tmpdir()
-    old_db = os.environ.get("AGENT_DB_PATH")
-    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
-    try:
-        from test_wechat_bridge import FakeWcf as _FW
-
-        class NamedWcf(_FW):
-            def nickname_of(self, wxid):
-                return "阿满" if wxid == "wxid_bot" else ""
-
-        cfg = _mcfg(groups_enabled=True)
-        media = os.path.join(tmp, "media")
-        os.makedirs(media, exist_ok=True)
-        b = WeChatBridge(cfg, NamedWcf(media), FakeAPI(),
-                         BridgeState(os.path.join(tmp, "s.json")), media_dir=media,
-                         log=lambda m: None)
-        b.async_dispatch = False
-        b.state.owner_wxid = OWNER
-        room = "457@chatroom"
-
-        class NamedAgent:
-            role_id = "g"
-            _lock = __import__("threading").RLock()
-
-            class conn:
-                @staticmethod
-                def execute(*a, **k):
-                    class R:
-                        def fetchall(s):
-                            return []
-                    return R()
-
-            def chime_in(self, dialogue, now=None, **kwargs):
-                return "叫我了，在呢"
-
-        class GroupMsg(FakeMsg):
-            def __init__(self, content):
-                super().__init__(content=content, sender=FRIEND, roomid=room)
-
-            def from_group(self):
-                return True
-
-        GroupMsg.at_me = False
-        b.pool.agents[room] = NamedAgent()
-        b.handle_message(GroupMsg("wxid_friend: 阿满 在吗"))
-        assert b.chime_check(room, now=time.time() + 8), "叫名字单条必须够格"
-        assert any(t[1] == room and "在呢" in t[0] for t in b.channel.texts)
-    finally:
-        if old_db:
-            os.environ["AGENT_DB_PATH"] = old_db
-        else:
-            os.environ.pop("AGENT_DB_PATH", None)
-        rmtree(tmp)
-
-
-
-
-def test_group_name_mention_bypasses_chime_cooldown():
-    """群里没@但正文点名（阿满/机器人）= 硬信号：冷却期也必须进插嘴决策。
-
-    2026-10-27 实测：阿满 这波…/机器人都不理我 这类消息被当旁听，冷却期
-    连 oh 都被清零，群里只剩主人的消息有回复。点名必须接。"""
-    tmp = make_tmpdir()
-    old_db = os.environ.get("AGENT_DB_PATH")
-    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
-    try:
-        from test_wechat_bridge import FakeWcf as _FW
-
-        class NamedWcf(_FW):
-            def nickname_of(self, wxid):
-                return "阿满" if wxid == "wxid_bot" else ""
-
-        cfg = _mcfg(groups_enabled=True, group_mention_only=True,
-                    group_self_aliases=["小满", "机器人"],
-                    group_chime_cooldown_seconds=300, group_chime_daily_max=12)
-        media = os.path.join(tmp, "media")
-        os.makedirs(media, exist_ok=True)
-        b = WeChatBridge(cfg, NamedWcf(media), FakeAPI(),
-                         BridgeState(os.path.join(tmp, "s.json")), media_dir=media,
-                         log=lambda m: None)
-        b.async_dispatch = False
-        b._send_reply = lambda text, peer: b.channel.texts.append((text, peer))
+        b = _mbridge(tmp, _mcfg(groups_enabled=True,
+                                group_chime_cooldown_seconds=120,
+                                group_chime_after_reply_seconds=20))
+        b._send_reply = lambda text, peer, **kw: b.channel.texts.append((text, peer))
         b.state.owner_wxid = OWNER
         room = "457@chatroom"
 
         class ChimeAgent:
             def __init__(self):
                 self.decisions = 0
+                self.last_chime_meta = {"to_me": True, "worth": 9.0}
                 import sqlite3
                 self.conn = sqlite3.connect(":memory:")
                 self.conn.row_factory = sqlite3.Row
                 self.conn.execute(
                     "CREATE TABLE messages(id INTEGER PRIMARY KEY, role_id TEXT,"
                     " sender TEXT, content TEXT, meta TEXT, created_at REAL, speaker TEXT, speaker_role TEXT)")
-                self.conn.execute(
-                    "INSERT INTO messages(role_id,sender,content,meta,created_at)"
-                    " VALUES('g','user','[AW] 今天服务器又炸了','{}',1.0)")
                 self.role_id = "g"
 
             def chime_in(self, dialogue, now=None, **kwargs):
                 self.decisions += 1
-                return "叫我了，在呢"
+                return "在呢，什么事"
 
         ca = ChimeAgent()
         b.pool.agents[room] = ca
         now = time.time()
-        # 刚插过嘴（冷却中），且没有攒够两条旁听
-        b._group_watch[room] = {"msgs": 1, "oh": 0, "mention": 0,
-                                "last_ts": now, "last_chime": now,
-                                "day": 0, "chimes": 1}
-
-        class GroupMsg(FakeMsg):
-            def __init__(self, content="", sender=FRIEND, at_me=False):
-                super().__init__(content=content, sender=sender, roomid=room)
-                self.at_me = at_me
-
-            def from_group(self):
-                return True
-
-        # 昵称点名：没@，也不是主人，冷却期内 + 单条旁听
-        b.handle_message(GroupMsg("wxid_friend: 阿满这波是照着剧本念的", at_me=False))
-        assert b._group_watch[room].get("mention", 0) == 1, "点名要记硬资格"
-        assert b.chime_check(room, now=now + 8), "点名必须绕开冷却"
+        # 刚发过话（10s 前）：先不判
+        b._group_watch[room] = {"msgs": 2, "oh": 2, "mention": 1, "about_me": 1,
+                                "last_ts": now, "last_chime": 0.0,
+                                "day": 0, "chimes": 0}
+        b._last_send[room] = now - 10
+        assert not b.chime_check(room, now=now + 8)
+        assert ca.decisions == 0
+        # 过了静默期：就算在冷却中、就算只是"提到我"，也要判（交给模型）
+        b._last_send[room] = now - 30
+        b._group_watch[room]["last_chime"] = now - 30
+        assert b.chime_check(room, now=now + 10), "提到我也要能进判断"
         assert ca.decisions == 1
-        assert any(t[1] == room and "在呢" in t[0] for t in b.channel.texts)
-
-        # 通用别名「机器人」同样算点名（实测：机器人都不理我）
-        b.handle_message(GroupMsg("wxid_friend: 机器人都不理我，还聊啥", at_me=False))
-        assert b._group_watch[room].get("mention", 0) == 1
-        assert b.chime_check(room, now=now + 16), "叫机器人也要接"
-        assert ca.decisions == 2
-        assert len([t for t in b.channel.texts if t[1] == room]) >= 2
     finally:
         if old_db:
             os.environ["AGENT_DB_PATH"] = old_db
@@ -816,25 +1013,286 @@ def test_group_name_mention_bypasses_chime_cooldown():
         rmtree(tmp)
 
 
-def test_group_chime_cooldown_keeps_overheard():
-    """冷却期不能把旁听清零：冷却结束话题还热，攒着的两条要能接上。
-
-    旧逻辑冷却期直接 0 掉 oh，群里安静时永远等不到下一对消息，表现为
-    "只回主人"。"""
+def test_chime_model_to_me_respects_cooldown():
+    """模型判的"在跟我说话"（to_me）也受冷却约束——只有硬点名（directed）豁免。
+    2026-10-29 22:40 实测：旁听对话被模型判 to_me，1 分钟内连发 3 条插嘴。"""
     tmp = make_tmpdir()
     old_db = os.environ.get("AGENT_DB_PATH")
     os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
     try:
         b = _mbridge(tmp, _mcfg(groups_enabled=True,
-                                 group_chime_cooldown_seconds=300,
-                                 group_chime_daily_max=12))
-        b._send_reply = lambda text, peer: b.channel.texts.append((text, peer))
+                                group_chime_cooldown_seconds=120))
+        b._send_reply = lambda text, peer, **kw: b.channel.texts.append((text, peer))
+        b.state.owner_wxid = OWNER
+        room = "457@chatroom"
+
+        class ChimeAgent:
+            def __init__(self):
+                import sqlite3
+                self.decisions = 0
+                self.last_chime_meta = {"to_me": True, "worth": 9.0}
+                self.conn = sqlite3.connect(":memory:")
+                self.conn.row_factory = sqlite3.Row
+                self.conn.execute(
+                    "CREATE TABLE messages(id INTEGER PRIMARY KEY, role_id TEXT,"
+                    " sender TEXT, content TEXT, meta TEXT, created_at REAL,"
+                    " speaker TEXT, speaker_role TEXT)")
+                self.role_id = "g"
+
+            def chime_in(self, dialogue, now=None, **kwargs):
+                self.decisions += 1
+                return "在呢，什么事"
+
+        ca = ChimeAgent()
+        b.pool.agents[room] = ca
+        now = time.time()
+        b._group_watch[room] = {"msgs": 2, "oh": 2, "mention": 0, "about_me": 0,
+                                "last_ts": now, "last_chime": now - 30,
+                                "day": time.localtime(now).tm_yday, "chimes": 0}
+        b._last_send[room] = now - 70
+        assert b.chime_check(room, now=now + 10)
+        assert ca.decisions == 1
+        assert not [t for t in b.channel.texts if t[1] == room],             "to_me 但非硬点名：冷却中不应发送"
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
+def test_chime_not_blocked_by_own_db_row():
+    """chime 自己落库后不能被自己的"防双发"守卫拦住——main 在返回文本前
+    已把 chime 记进库，旧守卫按"最后一条是 agent"判断会把每条 chime 误杀
+    （2026-10-29 23:38 实测：一句都发不出去）。只有"最新用户消息之后已有
+    别的 agent 回复"才该跳过。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.pop("AGENT_DB_PATH", None)
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
+    try:
+        b = _mbridge(tmp, _mcfg(groups_enabled=True,
+                                group_chime_cooldown_seconds=1))
+        b._send_reply = lambda text, peer, **kw: b.channel.texts.append((text, peer))
+        b.state.owner_wxid = OWNER
+        room = "457@chatroom"
+
+        class ChimeAgent:
+            def __init__(self):
+                import sqlite3
+                self.last_chime_meta = {"to_me": False, "worth": 7.0}
+                self.conn = sqlite3.connect(":memory:")
+                self.conn.row_factory = sqlite3.Row
+                self.conn.execute(
+                    "CREATE TABLE messages(id INTEGER PRIMARY KEY, role_id TEXT,"
+                    " sender TEXT, content TEXT, meta TEXT, created_at REAL,"
+                    " speaker TEXT, speaker_role TEXT)")
+                self.conn.execute("INSERT INTO messages(role_id,sender,content,meta,created_at)"
+                                  " VALUES('g','user','最新一句','{}',1.0)")
+                self.role_id = "g"
+                self.logged = False
+
+            def chime_in(self, dialogue, now=None, **kwargs):
+                # 模拟 main：chime 返回前先落库
+                self.conn.execute(
+                    "INSERT INTO messages(role_id,sender,content,meta,created_at)"
+                    " VALUES('g','agent','接一句试试','{}',2.0)")
+                self.logged = True
+                return "接一句试试"
+
+        ca = ChimeAgent()
+        b.pool.agents[room] = ca
+        now = time.time()
+        b._group_watch[room] = {"msgs": 2, "oh": 2, "mention": 0, "about_me": 0,
+                                "last_ts": now, "last_chime": 0.0,
+                                "day": time.localtime(now).tm_yday, "chimes": 0}
+        b._last_send[room] = now - 120
+        assert b.chime_check(room, now=now + 10)
+        assert ca.logged and any(t[1] == room for t in b.channel.texts),             "chime 自己落库不应拦自己"
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
+def test_chime_skips_conversation_after_at_others():
+    """近几条里有人 @ 别人（非广播型、3 分钟内）：紧随其后的接话也不插嘴。
+    真实病例（2026-10-29 23:50 鱼群）：@深情的大肥鱼 "还在吗" 之后的
+    "坠机了吗" 被 chime 当成问自己，回了"在呢，信号好好的"。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.pop("AGENT_DB_PATH", None)
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
+    try:
+        b = _mbridge(tmp, _mcfg(groups_enabled=True,
+                                group_chime_cooldown_seconds=1))
+        b._send_reply = lambda text, peer, **kw: b.channel.texts.append((text, peer))
+        b.state.owner_wxid = OWNER
+        room = "457@chatroom"
+
+        class ChimeAgent:
+            def __init__(self):
+                import sqlite3
+                self.decisions = 0
+                self.last_chime_meta = {"to_me": True, "worth": 9.0}
+                self.conn = sqlite3.connect(":memory:")
+                self.conn.row_factory = sqlite3.Row
+                self.conn.execute(
+                    "CREATE TABLE messages(id INTEGER PRIMARY KEY, role_id TEXT,"
+                    " sender TEXT, content TEXT, meta TEXT, created_at REAL,"
+                    " speaker TEXT, speaker_role TEXT)")
+                now = time.time()
+                self.conn.execute(
+                    "INSERT INTO messages(role_id,sender,content,meta,created_at)"
+                    " VALUES('g','user','wxid_friend: @深情的大肥鱼 还在吗',?,?)",
+                    ('{"at_names":["深情的大肥鱼"]}', now - 40))
+                self.conn.execute(
+                    "INSERT INTO messages(role_id,sender,content,meta,created_at)"
+                    " VALUES('g','user','坠机了吗','{}',?)", (now - 20,))
+                self.role_id = "g"
+
+            def chime_in(self, dialogue, now=None, **kwargs):
+                self.decisions += 1
+                return "在呢，信号好好的"
+
+        ca = ChimeAgent()
+        b.pool.agents[room] = ca
+        now = time.time()
+        b._group_watch[room] = {"msgs": 2, "oh": 2, "mention": 0, "about_me": 0,
+                                "last_ts": now - 10, "last_chime": 0.0,
+                                "day": time.localtime(now).tm_yday, "chimes": 0}
+        b._last_send[room] = now - 120
+        assert b.chime_check(room, now=now)
+        assert ca.decisions == 0, "在@别人的对话里不该插嘴"
+        assert not [t for t in b.channel.texts if t[1] == room]
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
+def test_name_mention_goes_to_reply_path_once():
+    """叫名字（没@）= 软点名：走正常回复路径（攒批 + 静默窗），只答一次。
+
+    2026-10-28 实测事故：点名被当成"插嘴硬信号"，插嘴对每条消息各接一次
+    （群里每句都以 阿满 开头），几分钟刷出十几条——所以点名改走回复路径，
+    插嘴不再重复接。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.get("AGENT_DB_PATH")
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
+    try:
+        from test_wechat_bridge import FakeWcf as _FW
+
+        class NamedWcf(_FW):
+            def nickname_of(self, wxid):
+                return "阿满" if wxid == "wxid_bot" else ""
+
+        cfg = _mcfg(groups_enabled=True, group_self_aliases=["小满", "机器人"])
+        media = os.path.join(tmp, "media")
+        os.makedirs(media, exist_ok=True)
+        b = WeChatBridge(cfg, NamedWcf(media), FakeAPI(),
+                         BridgeState(os.path.join(tmp, "s.json")), media_dir=media,
+                         log=lambda m: None)
+        b.async_dispatch = False
+        b.state.owner_wxid = OWNER
+        room = "457@chatroom"
+        routed = []
+        b._multi_message = lambda msg, peer: routed.append((msg.content, peer))
+
+        class GroupMsg(FakeMsg):
+            def __init__(self, content):
+                super().__init__(content=content, sender=FRIEND, roomid=room)
+                self.at_me = False
+
+            def from_group(self):
+                return True
+
+        b.handle_message(GroupMsg("wxid_friend: 阿满 在吗"))
+        assert len(routed) == 1, "点名必须走回复路径（一次）"
+        assert not b.chime_check(room, now=time.time() + 8), "插嘴不许再重复接一次"
+
+        # 通用别名「机器人」同样算点名
+        routed.clear()
+        b.handle_message(GroupMsg("wxid_friend: 机器人都不理我，还聊啥"))
+        assert len(routed) == 1, "叫机器人也要接（走回复路径）"
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
+def test_group_chime_not_vetoed_by_about_me():
+    """群里"提到我"不再是硬否决：交给模型判断接不接。
+
+    2026-10-28 实测：鱼群里每句话都带"阿满"，旧逻辑 about_me 直接 return False，
+    插嘴永远进不去 → 表现为"只回主人"。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.get("AGENT_DB_PATH")
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
+    try:
+        b = _mbridge(tmp, _mcfg(groups_enabled=True,
+                                 group_chime_cooldown_seconds=120,
+                                 group_chime_after_reply_seconds=20))
+        b._send_reply = lambda text, peer, **kw: b.channel.texts.append((text, peer))
         b.state.owner_wxid = OWNER
         room = "457@chatroom"
 
         class ChimeAgent:
             def __init__(self):
                 self.decisions = 0
+                import sqlite3
+                self.conn = sqlite3.connect(":memory:")
+                self.conn.row_factory = sqlite3.Row
+                self.conn.execute(
+                    "CREATE TABLE messages(id INTEGER PRIMARY KEY, role_id TEXT,"
+                    " sender TEXT, content TEXT, meta TEXT, created_at REAL, speaker TEXT, speaker_role TEXT)")
+                self.role_id = "g"
+
+            def chime_in(self, dialogue, now=None, **kwargs):
+                self.decisions += 1
+                return "接一句"
+
+        ca = ChimeAgent()
+        b.pool.agents[room] = ca
+        now = time.time()
+        b._group_watch[room] = {"msgs": 2, "oh": 2, "mention": 0, "about_me": 1,
+                                "last_ts": now, "last_chime": 0.0,
+                                "day": 0, "chimes": 0}
+        b._last_send[room] = now - 100
+        assert b.chime_check(room, now=now + 8), "提到我也要能进插嘴决策"
+        assert ca.decisions == 1
+    finally:
+        if old_db:
+            os.environ["AGENT_DB_PATH"] = old_db
+        else:
+            os.environ.pop("AGENT_DB_PATH", None)
+        rmtree(tmp)
+
+
+def test_group_chime_cooldown_only_blocks_self_initiated():
+    """冷却只拦"自发插话"：判断照常做，冷却期内不发；冷却过了才发。
+
+    门的顺序很重要：先让模型判"是不是在跟我说话"，再决定要不要受冷却约束。
+    旧顺序（先冷却、后判断）会让"别人明明在跟我说话"也被一起静音。"""
+    tmp = make_tmpdir()
+    old_db = os.environ.get("AGENT_DB_PATH")
+    os.environ["AGENT_DB_PATH"] = os.path.join(tmp, "owner.db")
+    try:
+        b = _mbridge(tmp, _mcfg(groups_enabled=True,
+                                group_chime_cooldown_seconds=300,
+                                group_chime_daily_max=12))
+        b._send_reply = lambda text, peer, **kw: b.channel.texts.append((text, peer))
+        b.state.owner_wxid = OWNER
+        room = "457@chatroom"
+
+        class ChimeAgent:
+            def __init__(self):
+                self.decisions = 0
+                self.last_chime_meta = {"to_me": False, "worth": 7.0}
                 import sqlite3
                 self.conn = sqlite3.connect(":memory:")
                 self.conn.row_factory = sqlite3.Row
@@ -852,16 +1310,18 @@ def test_group_chime_cooldown_keeps_overheard():
 
         ca = ChimeAgent()
         b.pool.agents[room] = ca
-        # 上次插嘴在 50s，现在是 200s（冷却未过）；两条旁听已攒着
+        # 上次插嘴在 50s，现在 200s（冷却未过）：照判，但不发
         b._group_watch[room] = {"msgs": 2, "oh": 2, "mention": 0,
                                 "last_ts": 100.0, "last_chime": 50.0,
                                 "day": 0, "chimes": 0}
-        assert not b.chime_check(room, now=200)
-        assert b._group_watch[room]["oh"] == 2, "冷却期不得清空旁听"
-        # 冷却过了（410-50>300）且最后一条在 10s 内：接
+        assert b.chime_check(room, now=200), "冷却也要先判断（判断不等于发）"
+        assert ca.decisions == 1
+        assert not b.channel.texts, "自发插话在冷却期不许发"
+        # 冷却过了（410-50>300）且话题还热：判完就发
+        b._group_watch[room]["oh"] = 2
         b._group_watch[room]["last_ts"] = 400.0
         assert b.chime_check(room, now=410)
-        assert ca.decisions == 1
+        assert ca.decisions == 2
         assert any(t[1] == room and "接一句" in t[0] for t in b.channel.texts)
     finally:
         if old_db:
@@ -869,7 +1329,6 @@ def test_group_chime_cooldown_keeps_overheard():
         else:
             os.environ.pop("AGENT_DB_PATH", None)
         rmtree(tmp)
-
 
 
 def test_retry_look_again_refetches_last_media():

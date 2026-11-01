@@ -82,9 +82,11 @@ class Msg:
     """标准化入站消息（与 wcf 的 WxMsg 字段对齐，桥的路由层零改动）。"""
 
     def __init__(self, type_, id_, sender, roomid, content, xml="", extra="",
-                 is_self=False, is_group=False, at_me=False):
+                 is_self=False, is_group=False, at_me=False, create_time=0.0):
         self.type = type_
         self.id = id_
+        # 消息在微信库里的创建时间：桥用它挡"历史回放"（重启/补收把老消息重送进来）
+        self.create_time = float(create_time or 0)
         self.sender = sender
         self.roomid = roomid
         self.content = content
@@ -119,6 +121,7 @@ class WxHookChannel:
         self._silk_to_wav = silk_to_wav or self._default_silk_to_wav
         self._q = queue.Queue()
         self._nick_cache = {}   # wxid -> 昵称（群聊标注谁在说话）
+        self._nick_fail = {}    # wxid -> 上次查询失败时刻（空结果只短暂负缓存）
         self._stop = threading.Event()
         self._poll_lock = threading.Lock()
         self._last_local_id = {}     # 表 -> 已处理到的 local_id（首见只记水位不回放）
@@ -159,9 +162,26 @@ class WxHookChannel:
     def is_login(self) -> bool:
         try:
             out = self._call("/QueryDB/status", timeout=5, method="GET")
-            return out.get("IsLogin") == 1
+            if out.get("IsLogin") == 1:
+                return True
         except WxHookError:
-            return False
+            pass
+        # 兜底：部分版本的 hook 在登录后 IsLogin 仍为 0。
+        # 界面已登录时，GetSelfProfile 或 contact.db 是能读到的。
+        try:
+            prof = self._call("/GetSelfProfile", timeout=5)
+            if str(prof.get("wxid") or "").strip():
+                return True
+        except WxHookError:
+            pass
+        try:
+            rows = self._query("contact.db",
+                               "SELECT COUNT(*) AS n FROM contact", timeout=5)
+            if rows and int(rows[0].get("n") or 0) > 0:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
 
     def get_self_wxid(self) -> str:
         if not self._self_wxid:
@@ -697,9 +717,16 @@ class WxHookChannel:
                 if (is_group and not groups_on) or not room:
                     return
                 last = self._last_local_id.get(table)
-                if last is None:  # 启动后才出现的表 = 新会话，从 0 开始拉
-                    self._last_local_id[table] = 0
-                    last = 0
+                if last is None:
+                    # 首见到的表（启动后才出现 / 启动时漏扫）：用当前最大 local_id 当水位，
+                    # 只接新消息。旧逻辑从 0 开始拉，会把整表历史当新消息重放——那正是
+                    # "把过去和现在的消息全部回复一遍"的根因（2026-10-28 实测）。
+                    row = self._query(
+                        "message_0.db",
+                        f"SELECT COALESCE(MAX(local_id),0) AS m FROM {table}")
+                    last = int(row[0]["m"]) if row else 0
+                    self._last_local_id[table] = last
+                    self.log(f"新表水位 {table} -> {last}（跳过历史）")
                 self_wxid = self.get_self_wxid()
                 if not self_wxid:
                     if not self._self_warned:
@@ -711,11 +738,18 @@ class WxHookChannel:
                     "message_0.db",
                     f"SELECT {self.POLL_COLUMNS} FROM {table}"
                     f" WHERE local_id > {last} ORDER BY local_id ASC LIMIT 50")
+                now_ts = time.time()
+                max_age = float(getattr(self.cfg, "max_message_age_seconds", 180.0) or 0)
                 for r in rows:
                     local_id = int(r.get("local_id") or 0)
                     if not local_id or local_id <= self._last_local_id[table]:
                         continue  # 客户端水位守卫（与 SQL WHERE 双保险）
                     self._last_local_id[table] = local_id
+                    # 历史行守卫：只推进水位、不入队。水位被重置/首见表从 0 拉时，
+                    # 老消息会成批涌进来——那正是"把过去全答一遍"（2026-10-28 实测）
+                    ct = float(r.get("create_time") or 0)
+                    if max_age > 0 and ct and now_ts - ct > max_age:
+                        continue
                     sender = self._sender_of(r.get("real_sender_id"))
                     source = decode_content(r.get("source"), self._zstd)
                     # 4.x 的 local_type 是复合编码（高32位=子类型如引用，低32位=基础类型），
@@ -726,7 +760,8 @@ class WxHookChannel:
                         source,
                         is_self=bool(sender and sender == self_wxid),
                         is_group=is_group,
-                        at_me=(is_group and self._at_me(source, self_wxid)))
+                        at_me=(is_group and self._at_me(source, self_wxid)),
+                        create_time=float(r.get("create_time") or 0))
                     self._q.put(msg)
             except WxHookError as e:
                 self.log(f"拉取 {table} 失败：{e}")
@@ -773,8 +808,13 @@ class WxHookChannel:
         标注"谁在说话"用；带缓存，失败静默（显示层降级，不影响收发）。"""
         if not wxid:
             return ""
-        if wxid in self._nick_cache:
-            return self._nick_cache[wxid]
+        cached = self._nick_cache.get(wxid)
+        if cached:
+            return cached
+        # 空结果不永久缓存：hook 刚起来时查一次失败，会把"我叫什么"永久钉成空，
+        # 群里点名（"阿满，…"）就再也认不出来——2026-10-28 实测"不回消息"。
+        if wxid in self._nick_fail and time.time() - self._nick_fail[wxid] < 30.0:
+            return ""
         name = ""
         try:
             esc = wxid.replace("'", "''")
@@ -785,5 +825,9 @@ class WxHookChannel:
                 name = str(rows[0].get("remark") or rows[0].get("nick_name") or "")
         except Exception:  # noqa: BLE001  昵称是展示层增强，缺了不挡路
             pass
-        self._nick_cache[wxid] = name
+        if name:
+            self._nick_cache[wxid] = name
+            self._nick_fail.pop(wxid, None)
+        else:
+            self._nick_fail[wxid] = time.time()   # 30s 后再试，不钉死
         return name

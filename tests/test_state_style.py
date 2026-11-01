@@ -116,5 +116,20 @@ def test_normal_state_zero_overhead():
         rmtree(tmp)
 
 
+def test_toolong_backstop_cuts_at_boundary_not_midword():
+    """超长兜底必须切在边界上，不能无声腰斩（真实病例 2026-10-29）：
+    "行哦，那我用下功夫瞅瞅\n\n先说个粗略的…" 旧逻辑 18 字硬 slice——唯一逗号
+    在 pos2 够不到 pos>=8 门槛、换行不被当边界，"…瞅瞅\n\n先说个粗略" 出门：
+    词中间断掉、空行留在正中，对方读起来就是消息被截断。"""
+    out = ss.toolong_backstop("行哦，那我用下功夫瞅瞅\n\n先说个粗略的思路明天给你")
+    assert out == "行哦，那我用下功夫瞅瞅", out      # 切在换行=保留完整第一行
+    assert "\n" not in out
+    # 无任何边界的长串：显式省略号，绝不无声切断在词中间
+    assert ss.toolong_backstop("哈" * 20).endswith("…")
+    # 不超限原样返回；串内唯一边界（逗号）正常可用
+    assert ss.toolong_backstop("短的不动") == "短的不动"
+    assert ss.toolong_backstop("今天天气不错，我们出去玩要不要带伞出门呢") == "今天天气不错"
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), "test_state_style"))

@@ -63,15 +63,23 @@ def _raw(method, url, data: bytes):
 
 
 def test_api_v1_prefix_equivalence():
-    """版本前缀是纯别名：/api/v1/X 与 /X 响应逐字节同构。"""
+    """版本前缀是纯别名：/api/v1/X 与 /X 走同一处理路径。
+    /status 含计数/时间类变动字段，两次调用不可能逐字节相等——比结构；
+    其余端点响应稳定，逐字节比。"""
     tmp = tempfile.mkdtemp()
     srv = _Server(tmp)
     try:
-        for bare in ("/health", "/status", "/messages?limit=3", "/pending?after_id=0"):
+        for bare in ("/health", "/messages?limit=3", "/pending?after_id=0"):
             _, a = _req("GET", srv.url(bare))
             _, b = _req("GET", srv.url("/api/v1" + bare))
             _, c = _req("GET", srv.url("/api" + bare))
             assert a == b == c, bare
+        # /status：同构（键集一致、role_id 一致），不逐字节比
+        _, s1 = _req("GET", srv.url("/status"))
+        _, s2 = _req("GET", srv.url("/api/v1/status"))
+        _, s3 = _req("GET", srv.url("/api/status"))
+        assert set(s1) == set(s2) == set(s3), "status 键集必须一致"
+        assert s1.get("role_id") == s2.get("role_id") == s3.get("role_id")
         # 版本前缀下的写操作
         code, out = _req("POST", srv.url("/api/v1/proactive"), body={"enabled": True})
         assert code == 200 and out["proactive_enabled"] is True

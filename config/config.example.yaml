@@ -39,8 +39,8 @@ gate:
   scene_whitelist: ["chat", "idle"]
 
 memory:
-  retrieval_top_k: 5
-  min_salience: 0.3
+  retrieval_top_k: 8
+  min_salience: 0.4
   salience_halflife_days: 14    # 检索排序时间衰减半衰期（天）；0=关闭
   batch_extract: true           # mem0 后端攒批提炼（省 token；连续失败自动停用）
   batch_min_items: 8            # 攒够几条候选才提炼一次
@@ -48,16 +48,25 @@ memory:
 
 # ---- 对话上下文压缩（滚动摘要）：近窗之外不裸丢，攒批折叠 ----
 dialogue:
-  window: 16              # 近窗保留原文条数（prompt 最近对话段）
-  compress_trigger: 30    # 未压缩消息积压到该条数触发后台压缩（约 30 轮上下文）
-  summary_max_chars: 900  # 滚动摘要长度上限
+  window: 30              # 近窗保留原文条数（prompt 最近对话段）
+  compress_trigger: 60    # 未压缩消息积压到该条数触发后台压缩（约 60 轮上下文）
+  summary_max_chars: 1500  # 滚动摘要长度上限
+
+# ---- 反思成长（有界人格演化）：定期把经历沉淀成洞察 / 规则 / 漂移 ----
+reflection:
+  enabled: true
+  min_interval_hours: 12    # 两次反思最小间隔
+  min_new_messages: 6       # 新增用户消息够多少条才触发
+  max_drift: 0.15           # 吸引子中心相对角色卡的总漂移上限（每维）
+  drift_step: 0.05          # 单次反思允许的最大步长
+  max_extra_rules: 3        # 成长规则上限；满了淘汰最旧的一条（FIFO）
 
 # ---- 审核 Agent（双 Agent 模式的第二个人：前额叶，只判断、不说话）----
 # 互动 Agent 写完一句话，审核 Agent 在出门前拦毛病：能力否认/AI 自曝/客服腔/
 # 答非所问/群聊站队/微信口语度/主动消息空转。不过审就打回互动 Agent 重写一次。
 reviewer:
   mode: llm                    # off=关 | rule=只跑确定性规则 | llm=规则+独立 LLM 审稿员（默认）
-  llm_purposes: ["respond", "proactive", "chime"]   # 这些用途每条都请审稿员
+  llm_purposes: []             # 留空=只有规则命中/高风险才请审稿员
   risk_triggers: true          # 名单之外的用途，规则抓到问题时也请审稿员终审
   max_llm_per_day: 400         # 审稿调用日上限（0=不限），防预算被审核烧穿
   max_tokens: 260              # 审稿只要一个短 JSON，别让它写作文
@@ -89,6 +98,31 @@ image_gen:
   base_url: "https://open.bigmodel.cn/api/paas/v4"
   api_key_env: BIGMODEL_API_KEY
 
+# 唱歌（本地 ACE-Step 1.5 / acestep.cpp Vulkan 后端）：点唱 -> 55 秒歌声 -> 语音气泡
+# 需要先启动本地服务（见 docs/features.md「唱歌」）：
+#   ace-server.exe --models models --device Vulkan0 --keep-loaded --port 8085
+song_gen:
+  enabled: true
+  provider: acestep_cpp       # acestep_cpp（本地）| mock（测试，1 秒正弦波）
+  base_url: "http://127.0.0.1:8085"
+  model: acestep-v15-turbo-Q8_0.gguf          # DiT；高音质可换 acestep-v15-sft-Q8_0 / xl-*
+  lm_model: acestep-5Hz-lm-1.7B-Q8_0.gguf     # 歌词/编曲 LM
+  duration_seconds: 55        # 默认时长；对话里"唱30秒/1分钟"会覆盖
+  max_duration_seconds: 300   # 单次可请求的最长时长（ACE-Step 上限 600）
+  max_send_seconds: 55        # 语音气泡上限 60s；超过这个时长只发高音质文件
+  style: ""                   # 留空=必须由用户说；只有对方说"随便/你定"才由模型挑
+  voice: "女声"               # 后端可调音色描述：女声/男声/低沉男声/清亮少女音…
+  vocal_language: zh
+  output_format: mp3
+  mp3_bitrate: 320            # 文件版音质；SILK 气泡仍受 24kHz mono 限制
+  send_mode: both             # bubble（语音气泡）| file（高音质文件）| both
+  inference_steps: 8          # turbo 模型推荐 8；sft 用 32-50
+  guidance_scale: 1.0
+  timeout_seconds: 240
+  poll_seconds: 1.0
+  out_dir: data/songs         # 相对仓库根
+  max_lyrics_chars: 600       # 用户送入的具体歌词可以长（≤12 行），别砍太狠
+
 wechat:
   channel: wxhook            # wxhook（微信 4.x，真语音气泡）| wcf（微信 3.9.12.51，MP3 文件卡片）
   multi_user: true           # 多用户：每个私聊用户一份独立人格实例；主人（下方 owner_wxid）用默认库
@@ -99,6 +133,11 @@ wechat:
   group_chime_cooldown_seconds: 300   # 同一群两次插嘴最小间隔
   group_chime_daily_max: 12  # 每群每天自发插嘴上限
   group_self_aliases: ["小满", "机器人"]  # 群里没@但这样叫也算叫它（群昵称自动识别）
+  enabled_chats: []          # 启用范围：空=全部；非空=只处理列出的群房间号/私聊 wxid
+  disabled_chats: []         # 停用名单（优先于启用范围）：聊天里 /chat off 写这里，重启仍生效
+  loose_chats: []            # 熟人 loose 模式：放松长度/审稿/风格约束，安全与频率硬闸不变
+  observe_chats: []          # 观察模式：主动/插嘴只记录不发送，先看“本来会说什么”
+  task_stale_seconds: 1200   # 后台任务心跳超时（秒）：超过标失败并通知用户
   allowed_wxids: []          # 空=所有私聊都响应；填 wxid 列表则白名单
   max_users: 20              # 并发用户上限
   server_url: "http://127.0.0.1:8787"

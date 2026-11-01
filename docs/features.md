@@ -31,17 +31,93 @@ LLM 永远不直接执行任何东西：感知层最多"提议"一个动作（�
 | `reminder.set/list/cancel` | 定时提醒；中文时间解析（"40分钟后/明天早上9点/晚上8点半/周一8点"） |
 | `note.add` | 随手记，入记忆库可检索 |
 | `web.fetch` | 抓网页正文（剥脚本标签、限 200KB、仅 http(s)） |
-| `web.search` | 联网搜索（智谱 Web Search Pro，实时信息/新梗/事实核查） |
+| `web.search` | 联网搜索（智谱 Web Search Pro，实时信息/新梗/事实核查），搜索结果带原文链接 |
+| `shopping.link` | 要购买链接时按型号生成京东/淘宝搜索直达链接（不编造商品页 ID） |
 | `bilibili.watch` | "看"B 站视频：元信息+弹幕热词+高赞评论+封面视觉描述合成观后素材 |
 | `bilibili.comments` | 读 B 站评论区：热评按点赞排序摘录 |
 | `desktop.notify` | Windows 桌面通知（无依赖 PowerShell 气泡） |
 | `image.draw` | 画图（CogView-3-Flash 免费档，产物随回复发送） |
+| `song.sing` | 点唱：本地 ACE-Step 1.5 生成 55 秒歌声，后台完成后以微信语音气泡发出 |
 | `meme.generate` | 表情包生成（需可选依赖 meme_generator，未装则明确报缺） |
 | `shell.run` | 本地命令；**默认禁用**（`hands.allow_shell: true` 显式开启） |
 
 到点提醒是用户自己约的闹钟：调度 tick 检查 `reminders` 表，**直发不走过评分闸门**
 （active_logs 留痕标记 `user_requested`），渲染失败也保证模板直发，绝不吞提醒。
 全部执行写 `hands_log` 表可审计。
+
+### 唱歌（本地 ACE-Step 1.5）
+
+点唱不是用 TTS 念歌词，而是本地音乐模型真的唱出来：
+
+- **触发**：感知层把"唱首歌/点歌/唱一段"提议成 `song.sing`，并写 2–4 句原创中文短句
+  （不照搬现成歌词；点具体歌名时按那个情绪写原创词）
+- **曲风不写死**：`style` 必须来自用户；对方没说曲风时动作不生成，返回"先问想听什么风格"，
+  由回复问一句。只有对方说"随便/都行/你定"时，才由模型挑一个具体曲风
+- **时长可指定**：`duration` 来自对话（"唱30秒/来一分钟的"），统一解析成秒并夹在
+  [10, `max_duration_seconds`=300]；默认 55 秒。超过 `max_send_seconds`（气泡上限）时
+  自动只发高音质文件，不再砍时长
+- **歌词可送入**：对方把歌词发过来就**原样**进歌（≤12 行、`max_lyrics_chars` 字上限，
+  长歌词记得同时给 duration）；对方没给才由模型写原创短句
+- **音色后端可调**：`song_gen.voice`（默认 `女声`）拼进 caption，可改 `男声/低沉男声/
+  清亮少女音`；用户在对话里指定音色时，`voice` 参数覆盖后端默认
+- **生成**：后台线程调本地 `acestep.cpp`（Vulkan 后端）异步 API：
+  `POST /lm` 出歌词/音频码 → `POST /synth` 渲染 mp3；不阻塞这一轮回复
+- **投递**：桥收到 `song_sender` 回调，按 `send_mode` 发送：
+  `bubble`=mp3→24kHz PCM→SILK 语音气泡；`file`=320kbps mp3 文件卡片（48kHz 立体声原样）；
+  `both`=气泡 + 文件（默认）。失败回落另一种/一句人话，不假装唱了
+  （投递走多用户模式 `wechat.multi_user: true`，单用户 REST 模式只落盘并在日志里给出路径）
+- **音质**：`mp3_bitrate: 320`；微信语音气泡本身是 24kHz 单声道（SILK 上限），
+  要听 48kHz 立体声请用文件卡片。模型可选 `acestep-v15-turbo-Q8_0`（快，8 步）/
+  `acestep-v15-sft-Q8_0`（50 步，更细）/ `*-xl-*`（4B，质量最高、显存/时间更大）
+- **状态**：服务没启动时动作直接返回"唱歌服务没开"，模型会直说这次唱不了
+
+启动本地服务（独立进程，模型放仓库外即可）：
+
+```bash
+cd <acestep.cpp 目录>          # 预编译包：serveurperso.com/temp/acestep.cpp-win64
+build/Release/ace-server.exe --models models --device Vulkan0 --keep-loaded --port 8085
+```
+
+配置见 `config.example.yaml` 的 `song_gen` 段；`provider: mock` 用于离线测试
+（生成 1 秒正弦波，不联网）。AMD 显卡走 Vulkan 不需要 ROCm；NVIDIA 可改用
+`--device CUDA0`。已知边界：首次请求要把 1.7B LM + 2B DiT 载入显存（约 5–10 秒），
+之后每首约 10–20 秒（RX 9070 XT 实测 11 秒/55 秒歌）。
+
+### 翻唱（cover）怎么处理
+
+点具体歌名（"唱《晴天》"）走真实翻唱，不是 ACE-Step 重写：
+
+1. **搜歌/下载**：`songsearch` 先按网易云搜原曲，VIP 失败回退酷我；原唱是男声时
+   优先找明确标注「女声/女生/女版」的翻唱（B站用 yt-dlp 下音轨、酷我直链），源音频
+   本身就在她的音区，不用移调。找不到女声版才用原唱
+2. **分离**：常驻 worker（`C:/path/to/AI/seedvc/code/vc_worker.py`）用 Demucs
+   `htdemucs_ft` 在 GPU 上分出人声/伴奏（30 秒约 7 秒）
+3. **主唱/和声拆分**：只在 Demucs 的人声轨上跑 UVR `UVR-MDX-NET-Karaoke-2`
+   （`C:/path/to/AI/uvr-venv`，模型在 `C:/path/to/AI/uvr-models`），分出主唱与和声。
+   不能直接在整首歌上跑该模型：开头吉他/伴奏会漏进“主唱”轨，被 RVC 当人声唱
+4. **换色**：只把主唱送进她音色训练出的 **RVC v2 48k 模型**
+   （`C:/path/to/AI/rvc/assets/weights/xiaoyi.pth`）。音高优先按原唱性别定：
+   感知层知道歌手性别时传 `gender`——男调以她舒适音区（25% 分位，约 253Hz）为目标，
+   升 +2~+7（低音男声才到 +7）；女调保持原调 0。不知道性别时用 Praat 估原唱人声中位
+   基频，对比她的音区自动判断（女调≈0、偏高男声 +1~+4、男低音 +4~+7）
+5. **混音**：换色后的主唱 + Demucs 伴奏 + 原版和声（0.8 音量）320kbps 混音，
+   回传语音气泡 / 文件卡片。人声移了 N 半音时，伴奏和和声会用 rubberband 同步移
+   N 半音（保持速度），否则人声和伴奏调性对不上
+
+RVC 的工程细节（AMD ROCm 踩坑记录）：
+
+- 训练数据用 edge-tts 小忆（`zh-CN-XiaoyiNeural`）生成 250 句，先训 30 轮、再续到 100 轮；
+  训练脚本 `C:/path/to/AI/rvc/train`，无需 fairseq
+- ROCm/MIOpen 对长序列 GEMM 会栈溢出（`0xC00000FD`），推理必须 **5 秒分块 + 0.5 秒交叉淡化**；
+  54 秒翻唱空闲时约 45 秒（demucs 7s + 主唱分离 16s + 换色 20s）
+- RVC 每块输出比输入短约 0.4%，不校正会累计成节奏漂移（12 块约 0.2 秒）。每块转换后
+  重采样回源块时长，最后再与源音频严格等长，混音才不会越走越偏
+- 必须用 **fp32**（`RVC_FP32=1`）且不能设 `HSA_OVERRIDE_GFX_VERSION`，否则 MIOpen 选错
+  kernel 崩溃；fp16 在 9070 XT 上不可用
+- worker 启动命令见 `deploy/voice_worker.bat`；没起 worker 时自动退回 Seed-VC 零样本换色
+
+ACE-Step 的 `cover-nofsq` 是另一种东西（让模型重唱，不是换音色），没有接进这条链路。
+
 
 已知边界（诚实声明）：感知提议依赖 LLM 输出 JSON——推理型模型思考链会吃输出预算，
 `perception.max_tokens` 需留足（默认 800）；感知失败回退词表的那一轮不会有手部动作，
@@ -65,11 +141,23 @@ LLM 阅读真实证据（近期对话主题、主动行为的拒绝率与回应�
 | 产出 | 机制与边界 |
 |---|---|
 | 洞察（insights） | 存为 `reflection` 记忆（可检索，进入后续 Prompt 的相关记忆） |
-| 新聊天习惯 | 角色卡之外最多 +2 条（`max_extra_rules`），须有证据依据 |
-| 人格微调（trait_shift） | 吸引子中心漂移：单步 ≤0.05、累计 ≤0.15（相对角色卡），收敛性不受影响 |
+| 新聊天习惯 | 角色卡之外最多 +3 条（`max_extra_rules`，可调），满了淘汰最旧一条（FIFO），须有证据依据 |
+| 成长外环（docs/growth.md） | 行为证据估计出目标 P*，中心偏移 p 缓慢向它收敛：步长随证据指数衰减（会饱和）、每维包络 ±`growth_envelope`（默认 0.25）、偏离超阈值才保留可塑性；核心不变量/边界不参与 |
 
-每次反思写 `reflections` 表；`GET /status` 的 `growth` 显示当前漂移；一键回滚：
-`PUT /settings {"growth":{"reset":true}}`。手动触发：`POST /reflect`。
+成长外环的关键性质（固定数据集离线验收，`tests/test_growth.py`）：
+
+- **收敛**：同一批证据反复喂，步长单调下降到 <1e-6，p 停在 P* 附近；
+- **饱和**：收敛后继续喂同样的数据不再移动——成长有尽头，不会无限漂；
+- **跟随**：用户行为反转（热络→冷淡）后目标翻转，p 在包络内重新收敛；
+- **有界**：任意极端证据 p 不超过包络，且不把中心推出维度取值范围；
+- **可见**：控制台「成长」页——收敛曲线（纵轴自动缩放）、当前 vs 出厂/目标表、
+  append-only 成长时间线（`growth_events`，回滚也留痕）、一键回滚按钮；
+- **进提示词**：收敛后的画像以稳定段【长期成长】进入每轮 Prompt（≤220 字，
+  证据 ≥40 条起生效）；原始日志只进 SQLite，不占 Prompt。
+
+每次反思写 `reflections` 表与 `growth_events` 账本；`GET /status` 的 `growth`
+显示当前 p / 目标 / 证据量；一键回滚：`PUT /settings {"growth":{"reset":true}}`
+（控制台成长页也有按钮）。手动触发：`POST /reflect`。
 证据不足时它会诚实地什么都不改。
 
 ## 记忆后端
@@ -171,6 +259,31 @@ AI 接入（provider/地址/模型/Key）、记忆后端热切换、洞察开关
 **服务器**：`deploy/withme.service`（systemd）；对外暴露用 `--host 0.0.0.0` +
 `AGENT_API_TOKEN` + nginx/caddy HTTPS。
 
+## 聊天命令（远程调参）
+
+微信里直接发斜杠命令改参数，不用开电脑：只认主人（owner wxid），群聊私聊都能用
+（群里加 @ 更明确，但不强制——微信的 @ 元数据在兜底补收时可能缺失）；命令不进
+对话历史、不进记忆、不过审核，由桥直接回执。解析器只认白名单命令名，普通文本里的
+`/`、分数、路径不会被误吃；非主人发的命令静默丢弃。
+
+```text
+/status                  当前模型/开关/阈值/插嘴配额/本会话状态
+/set th2 0.3             闸门 L2 阈值（th1/th2/th3，0–1）
+/off chime               群插嘴开关（on|off）；chimecd 冷却秒、chimed 日上限
+/set roast mild          玩梗尺度 off|mild|on
+/quiet 23:00-08:00       安静时段（off 清空）
+/set model <名字>        换模型（私聊限定）
+/chat off                停用当前会话；/chat <群名> on|off 可在别处按名字开关
+/chat list               列出已知会话的开关状态
+/get th2 · /audit · /undo · /help [项]
+```
+
+作用域分两层：`th2`、`tick`、`roast`、`review`、`l*` 等会话级参数写到该会话自己的
+库（群与私聊天然隔离，重启从 settings 恢复）；`chime`、`voice`、`chat` 等桥级参数
+改桥进程内存并写 `data/wechat_bridge_state.json` 的 overrides，重启自动覆盖
+`config.yaml`（配置文件仍是默认值）。每次成功修改写 `config_audit` 表，`/undo` 回滚
+上一笔；非法值只回提示、不动配置。单用户模式没有本地 Agent，只支持桥级命令。
+
 ## 测试与评估
 
 ```bash
@@ -190,6 +303,12 @@ python tools/judge_eval.py        # LLM-as-judge 三维评分
 | 场景感知（打字勿扰） | `POST /presence {typing}` → 90s 内主动评分打扰成本 +0.25 |
 | 反思调行为参数 | 反思可提议 `gate_shift`（L2 阈值 ±0.05/步、±0.15 封顶），随拒绝率自适应 |
 | 多步手部任务 | 感知可提议动作序列（≤3，按序执行，结果合并审计） |
+| 后台任务持久化 | 歌曲/画图先落 `tasks`；`task.status` / `task.cancel` / `task.retry` 可查、可取消、可重试；桥重启或心跳超时会通知用户 |
+| 异步看视频 | `bilibili.watch` 先回“在看了”，看完把结果交回 Agent 做第二次人格渲染再发，不把系统摘要直接冒充她说话 |
+| 媒体出站补发 | 文本/歌/图/文件发送失败落 `outbox`，按指数退避重试；健康页可看积压与失败 |
+| 任务权限硬闸 | 群友可点歌/画图，但 `shell.run` 只允许创造者；任务记录发起人，不能互相取消/重试 |
+| 入站触发审计 | `triggers` 记录 respond / observe / duplicate，1.5 秒内重复投递不再走 Agent |
+| 轻量召回 | `memory.recall` 按关键词翻旧消息和任务，任务卡随提示词注入，不把全量历史塞窗口 |
 | 成本护栏 | `cost.daily_token_budget`（默认 60 万 token/日），耗尽自动降级非核心路径，核心聊天不降 |
 | VL 看画面 | `bilibili.watch` 附封面视觉描述；`AGENT_VLM_MODEL` 可指定视觉模型 |
 | 语音 TTS / ASR | `POST /tts`（edge-tts）；ASR 走 OpenAI 兼容 `/audio/transcriptions` |

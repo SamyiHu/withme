@@ -282,5 +282,90 @@ def test_reply_plan_enters_prompt():
         rmtree(tmp)
 
 
+def test_old_dialogue_lines_carry_time_tags():
+    """最近对话带"多久之前说的"：防止把几小时前自己的话当成刚说的接着聊。
+
+    2026-10-28 实测：18:54 主动说了句"先去吃口热乎的"，22:19 用户说别的，
+    它又把"饭还是要吃的"接上去——因为窗口里那句话没有时间标记。"""
+    import time
+    tmp = make_tmpdir()
+    try:
+        builder, persona = _builder(tmp)
+        now = time.time()
+        old = {"sender": "agent", "content": "先去吃口热乎的",
+               "created_at": now - 3.5 * 3600, "meta": {}}
+        fresh = {"sender": "agent", "content": "饭还是要吃的",
+                 "created_at": now - 10, "meta": {}}
+        user = {"sender": "user", "content": "刚刚AI魔了", "created_at": now - 5,
+                "speaker": "阿澄", "speaker_role": "owner", "meta": {}}
+        kw = _base_kwargs(persona)
+        p = builder.build(**kw, now=now, recent_dialogue=[user, old, fresh],
+                          group_context=True)
+        lines = p["最近对话"]
+        assert lines[1].startswith("我（3.5小时前）："), lines
+        assert lines[2] == "我：饭还是要吃的", lines
+        assert "时间标记说明" in p, "有时间标记时要解释它"
+        # 全是新消息时不加标记、也不加说明
+        p2 = builder.build(**kw, now=now, recent_dialogue=[user, fresh],
+                           group_context=True)
+        assert all("前）" not in x for x in p2["最近对话"])
+        assert "时间标记说明" not in p2
+    finally:
+        rmtree(tmp)
+
+def test_group_prompt_tells_creator_he_is_the_favourite():
+    """创造者问"你对谁好感最高"时要直说是他，别用"法官/贿赂"段子挡回去。
+
+    2026-10-28 实测：群里主人问好感排名，AI 答"这题是坑吧…我排谁都要挨喷"。"""
+    tmp = make_tmpdir()
+    try:
+        builder, persona = _builder(tmp)
+        kw = _base_kwargs(persona)
+        p = builder.build(**kw, group_context=True, speaker_name="阿澄",
+                          speaker_role="owner", speaker_addressee="你")
+        rel = p.get("创造者关系") or {}
+        assert "好感" in (rel.get("被问到好感") or ""), rel
+        rules = " ".join(p.get("群聊规则") or [])
+        assert "好感最高" in rules, "群聊规则要写清楚这条"
+    finally:
+        rmtree(tmp)
+
+def test_needs_detail_injects_length_instruction():
+    """长度决策（感知层判定）落地到 Prompt：needs_detail=True 才注入"该详细"
+    指令；默认（闲聊）不注入，保持短说人设。"""
+    tmp = make_tmpdir()
+    try:
+        builder, persona = _builder(tmp)
+        kwargs = _base_kwargs(persona)
+        plain = builder.build(**kwargs)
+        assert "长度指令" not in plain
+        detailed = builder.build(**kwargs, needs_detail=True)
+        assert "长度指令" in detailed
+        assert "别为短而短" in detailed["长度指令"]
+        assert "说透" in detailed["长度指令"]
+    finally:
+        rmtree(tmp)
+
+
+def test_roast_level_controls_playful_teasing():
+    """玩梗互损尺度（persona.style.roast_level）：off/缺省=不配合损人；
+    mild/on=注入"朋友间玩梗式互损可以"的表达风格与群规则。"""
+    tmp = make_tmpdir()
+    try:
+        builder, persona = _builder(tmp)
+        kwargs = _base_kwargs(persona)
+        out = builder.build(**kwargs, group_context=True,
+                            group_self_names=["小满"], group_owner_name="阿澄")
+        assert "玩梗尺度" not in out["表达风格"]
+        assert not any("玩梗式互损" in r for r in out["群聊规则"])
+        persona.style["roast_level"] = "mild"
+        out2 = builder.build(**kwargs, group_context=True,
+                             group_self_names=["小满"], group_owner_name="阿澄")
+        assert "玩梗尺度" in out2["表达风格"]
+        assert any("玩梗式互损" in r for r in out2["群聊规则"])
+    finally:
+        rmtree(tmp)
+
+
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), "test_prompt_rebuild"))

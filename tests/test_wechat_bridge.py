@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common import make_tmpdir, repo_config_dir, rmtree, run_tests
@@ -511,6 +512,94 @@ def test_image_draw_disabled_and_enabled():
         rmtree(tmp)
 
 
+def test_image_draw_sanitizes_ip_names():
+    from src.imagegen import sanitize_prompt
+    p, swapped = sanitize_prompt("来张奶龙搞笑整活表情包，皮卡丘也行")
+    assert set(swapped) == {"奶龙", "皮卡丘"}
+    assert "奶龙" not in p and "皮卡丘" not in p
+    assert "小胖龙" in p and "电气小老鼠" in p
+    # 非 IP 提示词原样返回（不许误伤普通描述）
+    p2, s2 = sanitize_prompt("一只橘猫趴在窗台上晒太阳")
+    assert p2 == "一只橘猫趴在窗台上晒太阳" and s2 == []
+
+
+def test_image_draw_rejects_mismatched_output():
+    """上游对版权角色静默换图：自检判否就不发；自检自身出错要放行。"""
+    tmp = make_tmpdir()
+    try:
+        cfg = _cfg()
+        cfg.image_gen.enabled = True
+        from src.hands import Hands
+        from src.storage import init_db
+        import src.imagegen as ig
+        conn = init_db(os.path.join(tmp, "a.db"))
+        hands = Hands(cfg, conn, "xiaoman")
+
+        def fake_gen(prompt, c, llm, out_dir):
+            p = os.path.join(tmp, "z.jpg")
+            with open(p, "wb") as f:
+                f.write(b"\xff\xd8\xff")
+            return {"url": "u", "path": p}
+
+        orig = ig.generate_image
+        ig.generate_image = fake_gen
+        try:
+            seen = {}
+
+            def bad_verifier(prompt, path):
+                seen["prompt"] = prompt
+                return False
+
+            hands.image_verifier = bad_verifier
+            r = hands.execute("image.draw", {"prompt": "奶龙搞笑整活"})
+            assert not r["ok"] and "image" not in r and "对不上" in r["summary"]
+            # 送画前已把版权名换成长相描述
+            assert "奶龙" not in seen["prompt"] and "小胖龙" in seen["prompt"]
+            # 自检抛错 -> 当通过（只做减法，不能挡正常发图）
+            def boom(prompt, path):
+                raise RuntimeError("vision down")
+
+            hands.image_verifier = boom
+            r2 = hands.execute("image.draw", {"prompt": "一只猫"})
+            assert r2["ok"] and r2["image"].endswith("z.jpg")
+            hands.image_verifier = lambda prompt, path: True
+            r3 = hands.execute("image.draw", {"prompt": "一只猫"})
+            assert r3["ok"] and r3["image"].endswith("z.jpg")
+        finally:
+            ig.generate_image = orig
+    finally:
+        rmtree(tmp)
+
+
+def test_verify_drawn_image_verdict_parsing():
+    from src.main import Agent
+    tmp = make_tmpdir()
+    try:
+        p = os.path.join(tmp, "x.jpg")
+        with open(p, "wb") as f:
+            f.write(b"\xff\xd8\xff")
+
+        class FakeClient:
+            def __init__(self, reply):
+                self.reply = reply
+
+            def render_image(self, *a, **k):
+                return self.reply
+
+        a = object.__new__(Agent)
+        a._record_usage = lambda *_: None
+        a.client = FakeClient("否")
+        assert a._verify_drawn_image("一只猫", p) is False
+        a.client = FakeClient("是")
+        assert a._verify_drawn_image("一只猫", p) is True
+        a.client = FakeClient("呃这个不好说")
+        assert a._verify_drawn_image("一只猫", p) is None
+        a.client = FakeClient("否")
+        assert a._verify_drawn_image("一只猫", os.path.join(tmp, "nope.jpg")) is None
+    finally:
+        rmtree(tmp)
+
+
 # ---------------- HTTP 层 /chat images ----------------
 
 def test_server_chat_images_roundtrip():
@@ -639,9 +728,109 @@ def test_quote_reply_parsed():
                  '<displayname>阿澄</displayname></refermsg></appmsg></msg>')
     out2 = WeChatBridge._parse_quote(QMsg(xml_emoji))
     assert '表情包' in out2 and '这啥' in out2
+    # 引用的是另一条引用：要取内层 title，不能只说“一条消息”
+    xml_nested = ('<msg><appmsg><title>我练了两个，一个是街舞</title><type>57</type>'
+                  '<refermsg><content>&lt;msg&gt;&lt;appmsg&gt;&lt;title&gt;'
+                  '你这个练的是什么？&lt;/title&gt;&lt;/appmsg&gt;&lt;/msg&gt;</content>'
+                  '<displayname>示例昵称</displayname></refermsg></appmsg></msg>')
+    out3 = WeChatBridge._parse_quote(QMsg(xml_nested))
+    assert '示例昵称' in out3 and '你这个练的是什么' in out3, out3
     xml_link = ('<msg><appmsg><title>分享</title><type>5</type>'
                 '<url>https://example.com/a</url></appmsg></msg>')
     assert WeChatBridge._parse_quote(QMsg(xml_link)) is None
+
+
+# ---------------- 聊天命令（只认主人 + 群里要@ + 先于启用范围） ----------------
+
+def test_command_private_owner_before_scope():
+    tmp = make_tmpdir()
+    try:
+        cfg = _cfg(enabled_chats=["other@chatroom"], group_chime=True)
+        b, _ = _bridge(tmp, cfg=cfg)
+        b.async_dispatch = False
+        b.state.owner_wxid = "wxid_owner"
+        # 本会话不在启用范围内，命令仍然生效（/chat on 才能救回来）
+        b.handle_message(FakeMsg(type=MSG_TEXT, content="/off chime",
+                                 sender="wxid_owner"))
+        assert cfg.wechat.group_chime is False
+        assert any("chime" in t for t, _ in b.channel.texts)
+    finally:
+        rmtree(tmp)
+
+
+def test_command_group_owner_only_without_at():
+    """群里命令不强制 @：微信 @ 元数据在兜底补收时会缺（实测连发两条，第二条
+    被当成没@我）；守卫是"只认主人 + 白名单命令名"。"""
+    tmp = make_tmpdir()
+    try:
+        cfg = _cfg(groups_enabled=True, group_chime=True)
+        b, _ = _bridge(tmp, cfg=cfg)
+        b.async_dispatch = False
+        b.state.owner_wxid = "wxid_owner"
+        room = "xxx@chatroom"
+        # 主人没@也执行
+        b.handle_message(FakeMsg(type=MSG_TEXT, content="/off chime",
+                                 sender="wxid_owner", roomid=room))
+        assert cfg.wechat.group_chime is False
+        # 非主人：静默丢弃（不回、不执行）
+        before = len(b.channel.texts)
+        b.handle_message(FakeMsg(type=MSG_TEXT, content="/on chime",
+                                 sender="wxid_member", roomid=room))
+        assert cfg.wechat.group_chime is False
+        assert len(b.channel.texts) == before
+        # 主人 + @：同样执行
+        m = FakeMsg(type=MSG_TEXT, content="@小满" + chr(0x2005) + "/on chime",
+                    sender="wxid_owner", roomid=room)
+        m.at_me = True
+        b.handle_message(m)
+        assert cfg.wechat.group_chime is True
+    finally:
+        rmtree(tmp)
+
+
+def test_command_chat_on_outside_whitelist():
+    tmp = make_tmpdir()
+    try:
+        cfg = _cfg(groups_enabled=True,
+                   enabled_chats=["other@chatroom"],
+                   disabled_chats=["xxx@chatroom"])
+        b, _ = _bridge(tmp, cfg=cfg)
+        b.async_dispatch = False
+        b.state.owner_wxid = "wxid_owner"
+        m = FakeMsg(type=MSG_TEXT, content="/chat on",
+                    sender="wxid_owner", roomid="xxx@chatroom")
+        m.at_me = True
+        b.handle_message(m)
+        assert "xxx@chatroom" in cfg.wechat.enabled_chats
+        assert "xxx@chatroom" not in cfg.wechat.disabled_chats
+        assert b._chat_enabled("xxx@chatroom") is True
+        assert b.state.overrides.get("disabled_chats") == []
+    finally:
+        rmtree(tmp)
+
+
+def test_command_chat_target_by_group_name():
+    """在任意会话里按群名开关另一个群：/chat AI技术冲了 on。"""
+    tmp = make_tmpdir()
+    try:
+        cfg = _cfg(groups_enabled=True, enabled_chats=["50107328065@chatroom"])
+        b, _ = _bridge(tmp, cfg=cfg)
+        b.async_dispatch = False
+        b.state.owner_wxid = "wxid_owner"
+        b.pool = types.SimpleNamespace(agents={
+            "45729355366@chatroom": types.SimpleNamespace(
+                group_name="AI技术冲了", role_id="xiaoman"),
+        })
+        assert b.resolve_chat("AI技术冲了") == "45729355366@chatroom"
+        assert b.chat_label("45729355366@chatroom") == "AI技术冲了"
+        # 在鱼群（或私聊）里开另一个群
+        b.handle_message(FakeMsg(type=MSG_TEXT, content="/chat AI技术冲了 on",
+                                 sender="wxid_owner",
+                                 roomid="xxx@chatroom"))
+        assert "45729355366@chatroom" in cfg.wechat.enabled_chats
+        assert b._chat_enabled("45729355366@chatroom") is True
+    finally:
+        rmtree(tmp)
 
 if __name__ == "__main__":
     sys.exit(run_tests(globals(), name="test_wechat_bridge"))

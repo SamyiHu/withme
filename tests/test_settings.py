@@ -53,6 +53,64 @@ def test_style_override_hot_and_persisted():
         rmtree(tmp)
 
 
+def _agent_tmp_config(tmp) -> Agent:
+    """临时 config 目录（拷一份真实 yaml），改人格不会污染仓库。"""
+    cdir = os.path.join(tmp, "config")
+    os.makedirs(cdir, exist_ok=True)
+    for name in ("config.yaml", "persona.yaml"):
+        shutil.copyfile(os.path.join(ROOT, "config", name), os.path.join(cdir, name))
+    return Agent(config_dir=cdir, db_path=os.path.join(tmp, "agent.db"))
+
+
+def test_persona_baseline_and_limits_editable():
+    """基线/极限设定可改：立即生效 + 写 override + 重启仍生效 + 可恢复出厂。"""
+    tmp = make_tmpdir()
+    try:
+        agent = _agent_tmp_config(tmp)
+        old_identity = agent.persona.identity_summary
+        out = agent.apply_persona({
+            "identity_summary": "我是测试小满，只在测试里出现。",
+            "core_invariants": ["测试不变量一", "测试不变量二", "测试不变量三"],
+            "boundaries": ["测试边界：不乱承诺"],
+            "style": {"tone": "测试语气", "catchphrases": ["哦嚯"],
+                      "chat_rules": ["测试规则"], "forbidden": ["亲"]},
+        })
+        assert out["ok"] is True
+        assert agent.persona.identity_summary == "我是测试小满，只在测试里出现。"
+        assert agent.persona.core_invariants == ["测试不变量一", "测试不变量二", "测试不变量三"]
+        row = agent.engine.new_row(0)
+        prompt = agent.builder.build(
+            intent="respond", source=None, state_vector=row["state_vector"],
+            relation_state=row["relation_state"], memories=[], open_intents=[],
+            permission_level="L2", last_active_effect="x")
+        assert "测试小满" in str(prompt["身份摘要"])
+        assert "测试不变量一" in str(prompt["核心不变量"])
+        # 控制台「提示词」页也要能看到改动与覆盖记录
+        pv = agent.prompt_view()
+        assert "测试小满" in pv["base"]["identity_summary"]
+        assert pv["base"]["overrides"].get("identity_summary") == "我是测试小满，只在测试里出现。"
+
+        # 持久化：同 config 目录新建 Agent 仍生效
+        agent2 = Agent(config_dir=os.path.join(tmp, "config"),
+                       db_path=os.path.join(tmp, "agent.db"))
+        assert agent2.persona.identity_summary == "我是测试小满，只在测试里出现。"
+        assert agent2.persona.style["tone"] == "测试语气"
+
+        # 非法值拒绝（核心不变量必须 3-5 条）
+        try:
+            agent.apply_persona({"core_invariants": ["只剩一条"]})
+            raise AssertionError("非法人格必须被拒绝")
+        except ValueError:
+            pass
+
+        # 恢复出厂
+        agent.apply_persona({"reset": True})
+        assert agent.persona.identity_summary == old_identity
+        assert not os.path.exists(os.path.join(tmp, "config", "persona.overrides.json"))
+    finally:
+        rmtree(tmp)
+
+
 def test_quiet_hours_and_proactive_overrides():
     tmp = make_tmpdir()
     try:

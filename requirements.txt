@@ -8,3 +8,7 @@
 #   pip install pysilk-mod zstandard imageio-ffmpeg   # wxhook：真语音气泡（全 wheel 免编译）
 #   #   SILK 编解码备选：pip install pilk（wheel 到 cp311）/ 装 Node 走 silk-wasm 兜底
 #   pip install wcferry                              # wcf 备选通道：微信 3.9.12.51
+#   # ---- 唱歌（docs/features.md「唱歌」）----
+#   # 本地 acestep.cpp Vulkan 服务，不新增 Python 依赖；预编译包 + GGUF 模型
+#   # https://github.com/ServeurpersoCom/acestep.cpp
+#   pip install yt-dlp   # B站女声翻唱源：搜歌后下音轨（网易云/酷我直链不需要）

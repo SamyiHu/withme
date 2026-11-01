@@ -7,6 +7,7 @@
 分析失败或 mock 模式时回退到关键词启发式，链路永不中断。
 """
 import json
+import re
 
 ANALYSIS_HEADER = """分析用户发给陪伴型 AI 的最新一条消息，只输出一个 JSON 对象，禁止输出任何其他文字。
 
@@ -25,6 +26,16 @@ ANALYSIS_HEADER = """分析用户发给陪伴型 AI 的最新一条消息，只�
 - hand_action: 若这句话隐含可执行的动手请求，从【可用动作】里选并给出参数，
   形如 {"name":"reminder.set","params":{...}}；一句话含多个步骤时给数组（最多3个，按顺序）；
   没有就 null。
+  唱歌/翻唱分两个动作：
+  - **song.sing**（自己编歌唱）：对方说"唱首歌/唱一段"没指定具体歌曲时用。
+    lyrics：对方把歌词发给你时原样填入（≤12 行）；没给才自己写 2-4 句短句。
+    style 必须来自用户；对方没说曲风就留空让回复先问。
+  - **song.cover**（翻唱现成歌曲）：对方说「翻唱xxx/唱《歌名》/用你的声音唱xxx」
+    指的是现成的歌时用。title 填歌名，artist 填歌手（可选），
+    duration 可选（翻一段），start 可选（跳前奏）。
+    对方给了歌词但指的是现成歌的词 → 也是 song.cover。
+  voice / duration 对两个动作都适用。
+  不要用文字念歌词代替唱歌。
   【上一轮动作】是系统刚执行过的动作及其结果：仅当对方明确要求重做该动作
   （"再画一张/重试/再发一次/还是不行"）时才重新发起（参数按对方新说法调整，
   如画图被拦就改用描述性说法重画）。对方在纠正别的事（称呼/辈分/说法对错）
@@ -102,7 +113,7 @@ def _clamp_output(obj: dict, text: str, valid_hands=()) -> dict:
             actions.append({"name": str(act["name"])[:24],
                             "params": {str(k)[:16]: (v if isinstance(v, (str, int, float))
                                                      else str(v)[:60])
-                                       for k, v in list(params.items())[:4]}})
+                                       for k, v in list(params.items())[:8]}})
     if actions:
         hand_out = actions if isinstance(hand, list) else actions[0]
     plan = obj.get("reply_plan")
@@ -144,3 +155,40 @@ def perceive(client, text: str, seed: int, perception_cfg, context: dict = None)
     except Exception as e:  # noqa: BLE001  洞察失败绝不阻塞主链路
         print(f"[perception] 调用失败，回退启发式：{e!r}")
         return None
+
+
+# 长度决策信号：intent_type 到"该不该详细说"的映射（模型要决策：有必要详细说
+# 的情况下就详细说，没必要就继续短说）。感知为 None（mock/失败回退）时默认
+# False——与既有闲聊短说行为一致，感知链路异常不改变默认人设。
+DETAIL_INTENTS = ("提问", "求助建议")
+
+# 明确的"要内容"请求：讲故事/继续/展开/解释——意图分类常把它们归到
+# 提出计划/闲聊，只按 intent_type 判会漏。漏判的代价是审核按闲聊 36 字兜底：
+# 2026-10-30 实测原稿 850 字的平行世界故事被砍成"那我一口气给你讲完" 9 个字，
+# 用户看到的就是"老是不讲"。
+_DETAIL_REQ = re.compile(
+    r"继续|接着|然后呢|还有呢|往下|展开|详细|一口气|讲完|说完|多讲|多说|从头|"
+    r"讲个|讲一下|讲讲|讲故事|说个|说说|写个|写篇|编个|编一个|故事|来龙去脉|"
+    r"原理|区别|对比|分析|解释|介绍|科普|梳理|捋|"
+    # 选品/推荐：要的是型号和参数，短回等于没答。2026-11-01 实测"那推荐几款吧，
+    # 给出京东连接"被当闲聊，36 字兜底只留下"…型号：小米4"，后半句全没了。
+    r"推荐|几款|哪款|怎么选|选型|型号|参数|链接|连接")
+
+
+def needs_detail(perc: dict) -> bool:
+    """从感知结果派生"这条回复该不该详细"。
+
+    判定：提问/求助建议要详细（技术问答、要方法要链接）；正文里明确要求
+    "继续/讲完/展开/编个故事"的也要详细（需求本身就是要内容，短回等于没答）。
+    分享/提出计划/闲聊/情绪安抚默认短说——群里日常分享琐事时给它
+    "必要信息全给到"的指令，它会写成两段式讲课，和插嘴的短句形成反差
+    （2026-10-29 实测：@ 回复 60~120 字两段式 vs 插嘴 5~15 字，"看着怪怪的"）。
+    urgency 高的求助即使意图识别偏了也放行（宁可详细不可漏事）。"""
+    if not perc:
+        return False
+    if perc.get("intent_type") in DETAIL_INTENTS:
+        return True
+    if float(perc.get("urgency", 0) or 0) >= 0.7 and perc.get("topics"):
+        return True
+    head = str(perc.get("text_head") or "")
+    return bool(head and _DETAIL_REQ.search(head))

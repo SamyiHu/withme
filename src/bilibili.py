@@ -18,9 +18,9 @@ from collections import Counter
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
       "Referer": "https://www.bilibili.com"}
 
-def default_fetch(url: str, binary: bool = False):
+def default_fetch(url: str, binary: bool = False, timeout: float = 15):
     req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         data = r.read()
         final = r.geturl()
     if binary:
@@ -139,8 +139,19 @@ def watch_summary(url_or_id: str, fetch=None, describe_cover=None) -> str:
             f"弹幕热词（采样{dm_total}条）：{'、'.join(dm_lines)}\n"
             f"高赞评论：{'；'.join(cm_lines) or '无'}")[:900]
 
-def comments_summary(url_or_id: str, fetch=None) -> str:
-    """读评论区：热评为主。"""
+def comments_summary(url_or_id: str, fetch=None, timeout: float = 8.0) -> str:
+    """读评论区：热评为主。
+
+    只读文字，不拉封面/弹幕，通常 1-2 秒；因此保持同步，让用户拿到一条完整回复。
+    给默认网络请求一个较短的单请求超时（8s），避免 2-3 个 15s 请求串起来把前台
+    对话堵住；拿不到就返回可读的“没读到”，不把异常抛到聊天层。
+    """
+    if fetch is None:
+        def fetch(u, binary=False):
+            try:
+                return default_fetch(u, binary, timeout=timeout)
+            except TypeError:      # 测试/注入的 fetch 只接受 (url, binary)
+                return default_fetch(u, binary)
     bvid = parse_bvid(url_or_id, fetch)
     info = video_info(bvid, fetch)
     items = comments(info["aid"], fetch, max_items=12)

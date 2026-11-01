@@ -197,8 +197,10 @@ def _mock_tables(fake, rooms=(OWNER,), rows_by_room=None):
         fake.queries[("message_0.db", table_for_room(room))] = rows
 
 
-def _row(lid, ltype, sender_rid, content=b"hi", source=b""):
-    return {"local_id": lid, "local_type": ltype, "create_time": 1790000000,
+def _row(lid, ltype, sender_rid, content=b"hi", source=b"", age=0.0):
+    """构造一行消息。age=消息距今多少秒（默认 0=刚发；历史回放用例传大值）。"""
+    import time as _t
+    return {"local_id": lid, "local_type": ltype, "create_time": _t.time() - age,
             "real_sender_id": sender_rid,
             "message_content": _hex(content) if content else "",
             "source": _hex(source) if source else ""}
@@ -227,6 +229,52 @@ def test_poll_table_watermark_and_normalize():
         assert not msgs[0].from_self()
         assert msgs[1].from_self() and msgs[1].sender == SELF
         assert ch._last_local_id[table_for_room(OWNER)] == 4
+    finally:
+        rmtree(tmp)
+
+
+def test_new_table_first_sight_skips_history():
+    """启动后第一次发现的表：以当前最大 local_id 为水位，不把整表历史当新消息。
+
+    2026-10-28 事故根因：首见到的表从 0 开始拉，桥重启/漏扫后把整表历史
+    （最多每次 50 条）当新消息重放，AI 逐条回复 = 把过去全答一遍。"""
+    tmp = make_tmpdir()
+    try:
+        ch, fake = _channel(tmp)
+        rows = [_row(1, 1, 2, "老消息1".encode()), _row(2, 1, 2, "老消息2".encode())]
+        _mock_tables(fake, rows_by_room={OWNER: rows})
+        ch.poll_table(table_for_room(OWNER))      # 没跑 bootstrap_watermarks
+        assert ch._q.empty(), "首见到的表必须跳过历史"
+        assert ch._last_local_id[table_for_room(OWNER)] == 2
+        # 真正的新行照常入队
+        fake.queries[("message_0.db", table_for_room(OWNER))] = rows + [
+            _row(3, 1, 2, "新消息".encode())]
+        ch.poll_table(table_for_room(OWNER))
+        msg = ch._q.get_nowait()
+        assert msg.id == "3" and msg.content == "新消息"
+    finally:
+        rmtree(tmp)
+
+
+def test_poll_table_drops_stale_rows_but_advances_watermark():
+    """历史行（超过 max_message_age_seconds）只推水位不入队——防止把过去全答一遍。"""
+    tmp = make_tmpdir()
+    try:
+        ch, fake = _channel(tmp)
+        room = OWNER
+        _mock_tables(fake, rows_by_room={room: [_row(1, 1, 2, b"old")]})
+        ch.bootstrap_watermarks()          # 水位=1
+        fake.queries[("message_0.db", table_for_room(room))] = [
+            _row(1, 1, 2, b"old"),
+            _row(2, 1, 2, "两天前的".encode(), age=2 * 86400),
+            _row(3, 1, 2, "刚发的".encode()),
+        ]
+        ch.poll_table(table_for_room(room))
+        msgs = []
+        while not ch._q.empty():
+            msgs.append(ch._q.get_nowait())
+        assert [m.content for m in msgs] == ["刚发的"], [m.content for m in msgs]
+        assert ch._last_local_id[table_for_room(room)] == 3, "历史行也要推进水位"
     finally:
         rmtree(tmp)
 
@@ -435,6 +483,23 @@ def test_nickname_of_from_contact_db():
 
 
 # ---------------- 通知接收端（进程内 HTTP） ----------------
+
+def test_nickname_lookup_failure_is_not_cached_forever():
+    """contact.db 抖一次不能把"我叫什么"永久钉成空——那会让群里点名认不出我。"""
+    tmp = make_tmpdir()
+    try:
+        ch, fake = _channel(tmp)
+        fake.queries[("contact.db", "contact")] = []
+        assert ch.nickname_of("wxid_x") == ""
+        # 30s 内负缓存（不反复打库），过期后重查
+        assert ch.nickname_of("wxid_x") == ""
+        ch._nick_fail.clear()
+        fake.queries[("contact.db", "contact")] = [{"nick_name": "阿满", "remark": ""}]
+        assert ch.nickname_of("wxid_x") == "阿满"
+        assert ch.nickname_of("wxid_x") == "阿满"     # 成功后走缓存
+    finally:
+        rmtree(tmp)
+
 
 def test_notify_server_triggers_poll():
     tmp = make_tmpdir()

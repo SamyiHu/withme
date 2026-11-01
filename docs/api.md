@@ -65,9 +65,11 @@ X-API-Token: <token>
 | 方法 路径 | 说明 |
 |---|---|
 | GET `/health` | 存活 + 版本握手，`{"ok": true, "api": "v1", "role_id": …, "llm_provider": …}` |
+| GET `/health/detail` | 组件健康快照（需令牌）：桥心跳 / hook 登录 / 语音 worker / 各会话任务与出站队列积压 / 最近触发（respond·observe·duplicate） |
 | GET `/status` | 状态向量 / 关系 / 今日主动 / 开关 |
 | GET `/console-data` | 控制台聚合快照 |
-| GET `/trajectory?limit=80` | 状态轨迹 |
+| GET `/trajectory?limit=80[&session=<id>][&meta=1]` | 会话轨迹。默认回全部会话的条目；`session=` 只回那一条（其余只回元数据）；`meta=1` 只回会话清单（含 `total` / `last`） |
+| GET `/prompt[?session=<id>]` | 提示词查看：基线设定 + 初始基线提示词（`base.base_prompt`）+ 每个会话的叠加项；`session=` 时带上该会话最近一次实发快照（`sections` / `text`） |
 | GET `/messages?limit=50` | 最近消息（双向，含主动消息） |
 | GET `/pending?after_id=N` | **增量拉取** id>N 的 agent 消息，返回 `{"items": […], "last_id": M}` |
 | GET `/reminders` | 未完成提醒 |
@@ -84,6 +86,7 @@ X-API-Token: <token>
 | POST `/presence` | `{"typing": true}` → 输入心跳 |
 | POST `/settings` | `{…}` → 应用设置；非法项 400 |
 | POST `/config` | `{…}` → 运行时改配置；非法项 400 |
+| POST `/persona` | `{identity_summary?, core_invariants?, style?, boundaries?, baseline_state?, attractor?}` → 改人格基线/极限，写 `config/persona.overrides.json` 并立即生效；`{reset:true}` 恢复 `persona.yaml` 出厂值；非法 400 |
 | POST `/proactive` | `{"enabled": bool}` → 主动消息总开关 |
 | POST `/level` | `{"level": "L1|L2|L3", "enabled": bool}` → 分级开关 |
 

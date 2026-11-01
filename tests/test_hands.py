@@ -293,7 +293,31 @@ def test_web_search_summary_carries_dates():
     assert out["ok"], out["summary"]
     assert "（2026-10-23）" in out["summary"], "有日期的条目要带日期"
     assert "《旧闻》早年间的事" in out["summary"], "无日期条目不硬加空括号"
+    # 链接必须透传给模型：2026-11-01 实测只喂标题+摘要，模型手里没有 URL，
+    # 群里要"京东链接"时只能回"我不发外链，你自己搜型号"。
+    assert "https://x/1" in out["summary"] and "https://x/2" in out["summary"], \
+        out["summary"]
 
+
+
+def test_shopping_link_hand_builds_search_url():
+    """要购买链接：给商城搜索直达链接（中文已编码），不编造商品页 ID。
+
+    2026-11-01 真实病例：群里要"京东连接"，旧路径没有这个动作，只能回
+    "链接我就不发外链了，你自己搜型号"。"""
+    import sqlite3
+    cfg = load_config(os.path.join(repo_config_dir(), "config.example.yaml"))
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE hands_log(id INTEGER PRIMARY KEY, role_id TEXT, action TEXT,"
+                 " params TEXT, result TEXT, created_at REAL)")
+    h = Hands(cfg, conn, "xiaoman")
+    out = h.execute("shopping.link", {"keyword": "米家空气净化器4 Pro"}, now=1.0)
+    assert out["ok"], out
+    assert "search.jd.com/Search?keyword=" in out["summary"], out["summary"]
+    assert "%E7%B1%B3" in out["summary"], "中文型号必须 URL 编码，否则链接点不开"
+    tb = h.execute("shopping.link", {"keyword": "小米4", "site": "taobao"}, now=1.0)
+    assert "s.taobao.com/search?q=" in tb["summary"], tb["summary"]
+    assert not h.execute("shopping.link", {"keyword": " "}, now=1.0)["ok"]
 
 
 def test_web_search_chain_fallback():

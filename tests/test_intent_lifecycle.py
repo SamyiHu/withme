@@ -75,7 +75,7 @@ def test_recent_dialogue_in_prompt():
             relation_state=base_row["relation_state"],
             memories=[], open_intents=[], permission_level="L2",
             last_active_effect="尚无记录", recent_user_message="那肯定的，你在干嘛",
-            recent_dialogue=dialogue)
+            recent_dialogue=dialogue, now=1100.0)
         assert "最近对话" in builder_prompt
         tail = builder_prompt["最近对话"]
         assert len(tail) <= 16 and all(len(line) <= 82 for line in tail)

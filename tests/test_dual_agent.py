@@ -38,9 +38,9 @@ class DualClient:
         return ""
 
 
-def _agent(tmp, client, **kw):
+def _agent(tmp, client, config_dir=None, **kw):
     from src.main import Agent
-    return Agent(config_dir=os.path.join(ROOT, "config"),
+    return Agent(config_dir=config_dir or os.path.join(ROOT, "config"),
                  db_path=os.path.join(tmp, "a.db"), llm_client=client, **kw)
 
 
@@ -118,6 +118,152 @@ def test_trajectory_has_one_axis_per_session():
         ts = [x["created_at"] for x in group["items"]]
         assert ts == sorted(ts), "轴内条目必须按时间排"
         assert data["sessions"][0]["kind"] == "private", "私聊固定第一条轴"
+    finally:
+        rmtree(tmp)
+
+
+def test_trajectory_meta_and_session_filter():
+    """控制台切会话只搬一条轴：meta 只回清单，session= 只回那一条的条目。"""
+    tmp = make_tmpdir()
+    try:
+        os.makedirs(os.path.join(tmp, "wechat_users"), exist_ok=True)
+        agent = _agent(tmp, DualClient(good="在呢"))
+        agent.wechat_users_dir = os.path.join(tmp, "wechat_users")
+        agent.on_user_message("在吗", now=1000.0)
+
+        room = "45729355366@chatroom"
+        d = os.path.join(tmp, "wechat_users", room.replace("@", ""))
+        os.makedirs(d, exist_ok=True)
+        from src.main import Agent as _Agent
+        g = _Agent(config_dir=os.path.join(ROOT, "config"),
+                   db_path=os.path.join(d, "agent.db"), llm_client=DualClient(good="群里说一句"),
+                   group_room=room, group_name="测试群")
+        g.on_user_message("群友们好", now=1200.0, speaker="胖达",
+                          speaker_role="member", addressee="群聊")
+
+        meta = agent.trajectory(120, meta=True)
+        assert all(not s["items"] for s in meta["sessions"]), "meta 请求不该搬消息"
+        by_id = {s["id"]: s for s in meta["sessions"]}
+        assert by_id["private"]["total"] >= 2 and by_id["private"]["last"] >= 1000
+        assert by_id[room]["total"] >= 2 and by_id[room]["last"] >= 1200
+
+        only_group = agent.trajectory(120, session=room)
+        gs = {s["id"]: s for s in only_group["sessions"]}
+        assert gs[room]["items"], "选中的会话必须有条目"
+        assert not gs["private"]["items"], "没选中的会话不该搬消息"
+        assert gs[room]["truncated"] is False
+        only_private = agent.trajectory(120, session="private")
+        ps = {s["id"]: s for s in only_private["sessions"]}
+        assert ps["private"]["items"] and not ps[room]["items"]
+    finally:
+        rmtree(tmp)
+
+
+def test_reply_timestamp_carries_turn_latency():
+    """应答时间戳不再等于用户说话那一刻：要能看出这一轮实际花了多久。"""
+    tmp = make_tmpdir()
+    try:
+        agent = _agent(tmp, DualClient(bad="行", good="行啊"))
+        agent.on_user_message("在吗", now=1000.0)
+        rows = [dict(r) for r in agent.conn.execute(
+            "SELECT id, sender, meta, created_at FROM messages ORDER BY id").fetchall()]
+        assert len(rows) == 2, rows
+        assert abs(rows[0]["created_at"] - 1000.0) < 1e-6
+        assert rows[1]["created_at"] >= rows[0]["created_at"], "应答不能早于用户消息"
+        meta = json.loads(rows[1]["meta"])
+        assert isinstance(meta.get("turn_ms"), int) and meta["turn_ms"] >= 0
+        traj = agent.trajectory(20)
+        agent_items = [x for x in traj["items"] if x.get("sender") == "agent"]
+        assert agent_items and "turn_ms" in agent_items[-1]["trace"]
+    finally:
+        rmtree(tmp)
+
+
+def test_review_quota_survives_restart():
+    """重启后"今日 LLM 调用"要从 review_logs 读回来，不能显示 0。"""
+    tmp = make_tmpdir()
+    try:
+        client = DualClient()
+        a1 = _agent(tmp, client)
+        a1.on_user_message("你是谁", now=time.time())
+        assert a1.console_snapshot()["review"]["calls_today"] >= 1
+        a2 = _agent(tmp, DualClient(good="在"))
+        stats = a2.console_snapshot()["review"]
+        assert stats["calls_today"] >= 1, stats
+        assert a2.reviewer.calls_today >= 1, "日配额也要跨重启累计"
+    finally:
+        rmtree(tmp)
+
+
+def test_console_people_aggregates_all_sessions():
+    """人物卡不能只看主库：群友/私聊对方也得有卡，同一个人多处出现合并成一张。
+    夹具用 example 模板注入演示创造者（阿澄）：不依赖本机真实 persona，
+    私有仓/CI/开源包三处行为一致。"""
+    tmp = make_tmpdir()
+    try:
+        from common import copy_repo_configs, repo_config_dir
+        base = open(os.path.join(repo_config_dir(), "persona.example.yaml"),
+                    encoding="utf-8").read()
+        persona_text = base.replace('name: ""', 'name: "阿澄"', 1) \
+                           .replace('wxid: ""', 'wxid: "creator_demo"', 1)
+        cfgdir = copy_repo_configs(tmp, persona_text=persona_text)
+        agent = _agent(tmp, DualClient(good="在呢"), config_dir=cfgdir)
+        agent.wechat_users_dir = os.path.join(tmp, "wechat_users")
+        agent.on_user_message("在吗", now=1000.0)
+
+        room = "45729355366@chatroom"
+        d = os.path.join(tmp, "wechat_users", room.replace("@", ""))
+        os.makedirs(d, exist_ok=True)
+        from src.main import Agent as _Agent
+        g = _Agent(config_dir=cfgdir,
+                   db_path=os.path.join(d, "agent.db"), llm_client=DualClient(good="收到"),
+                   group_room=room, group_name="测试群")
+        g.on_user_message("大家好", now=1200.0, speaker="胖达",
+                          speaker_wxid="wxid_panda", speaker_role="member",
+                          from_owner=False)
+
+        people = {p["name"]: p for p in agent.console_snapshot()["people"]}
+        assert "胖达" in people, people.keys()
+        assert "阿澄" in people
+        creator = people["阿澄"]
+        assert "私聊" in creator["sessions"] and "测试群" in creator["sessions"], creator
+        assert people["胖达"]["sessions"] == ["测试群"], people["胖达"]
+    finally:
+        rmtree(tmp)
+
+
+def test_prompt_view_exposes_base_and_group_prompt():
+    """提示词入口：基线（初始）+ 每轮实发快照；群聊必须能看到群聊规则。"""
+    tmp = make_tmpdir()
+    try:
+        os.makedirs(os.path.join(tmp, "wechat_users"), exist_ok=True)
+        agent = _agent(tmp, DualClient(good="在呢"))
+        agent.wechat_users_dir = os.path.join(tmp, "wechat_users")
+        agent.on_user_message("在吗", now=1000.0)
+
+        pv = agent.prompt_view(session="private")
+        assert pv["base"]["identity_summary"]
+        assert "身份摘要" in pv["base"]["base_prompt"]["sections"]
+        private = [s for s in pv["sessions"] if s["id"] == "private"][0]
+        lp = private["last_prompt"]
+        assert lp and str(lp["purpose"]).startswith("respond"), lp
+        assert "最近对方消息" in lp["sections"], list(lp["sections"])
+        assert lp["text"].startswith("【身份摘要】")
+
+        room = "45729355366@chatroom"
+        d = os.path.join(tmp, "wechat_users", room.replace("@", ""))
+        os.makedirs(d, exist_ok=True)
+        from src.main import Agent as _Agent
+        g = _Agent(config_dir=os.path.join(ROOT, "config"),
+                   db_path=os.path.join(d, "agent.db"), llm_client=DualClient(good="收到"),
+                   group_room=room, group_name="测试群")
+        g.wechat_users_dir = os.path.join(tmp, "wechat_users")
+        g.on_user_message("大家好", now=1200.0, speaker="胖达", speaker_wxid="wxid_p",
+                          speaker_role="member", from_owner=False)
+        gv = g.prompt_view(session=room)
+        own = gv["sessions"][0]
+        assert own["id"] == room and own["kind"] == "group", own
+        assert "群聊规则" in own["last_prompt"]["sections"], list(own["last_prompt"]["sections"])
     finally:
         rmtree(tmp)
 

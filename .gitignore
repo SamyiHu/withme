@@ -16,6 +16,9 @@ deploy/start_hidden.vbs
 
 # 网页客户端（聊天 + 控制台）随开源版发布
 
+.tmpcheck/
+.tmp_repos/
+.test_tmp/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -41,3 +44,4 @@ docs/publication_action_plan.md
 # 本地配置（首次运行自动从 *.example.yaml 生成；开源版用户填真实值后不误提交）
 config/config.yaml
 config/persona.yaml
+config/persona.overrides.json

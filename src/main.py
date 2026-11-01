@@ -16,26 +16,64 @@ import shutil
 import sys
 import threading
 import time
+import urllib.request
 
 from . import chaos, feedback as feedback_mod, motivation, perception as perception_mod, relation as relation_mod
+from . import growth
 from . import reflection as reflection_mod
 from . import state_style as state_style_mod
 from . import style_ctrl
 from . import reviewer as reviewer_mod
-from .config import AppConfig, Persona, load_config, load_persona, parse_quiet_hours
+from .config import (AppConfig, ConfigError, Persona, load_config, load_persona,
+                     parse_quiet_hours, persona_from_dict, persona_overrides_path)
 from .gate import Gate, register_active
-from .hands import Hands
+from .hands import Hands, shopping_link
 from .intents import INTENTS
-from .llm_client import create_client
+from .llm_client import create_client, render_prompt_text
 from .memory import MemoryStore, _bigrams
 from .persona_attractor import PersonaAttractor
 from .person import PersonStore
+from . import stickers as sticker_mod
 from .prompt_builder import (PromptBuilder, estimate_tokens, relative_age,
                              strip_media_markers, strip_role_prefix)
 from .state_dims import DIMS, clamp_dim, clamp_vector
 from .state_engine import StateEngine
 from .storage import default_db_path, get_setting, init_db, load_state, project_root, save_state, set_setting
 
+
+
+def _deep_merge(dst: dict, src: dict) -> dict:
+    """dict 深合并；非 dict 一律整体替换（列表/标量按覆盖语义）。"""
+    out = dict(dst or {})
+    for k, v in (src or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+# 滚动摘要的拒答检测：模型安全拒答/语言不符的结果不能写进摘要。
+# 实测事故：压缩请求被拒答，摘要被存成 "Sorry, I can't respond to this
+# question."，之后每轮 prompt 都带着这句话。
+_REFUSAL_HEAD_RE = re.compile(
+    r"(?i)^(?:sorry\b|i'?m sorry\b|i (?:can'?t|cannot|am unable)\b|"
+    r"i am (?:an? )?(?:ai|assistant)\b|"
+    r"(?:抱歉|对不起)[，,]?\s*(?:我)?(?:无法|不能)(?:回答|协助|处理)|"
+    r"作为(?:一个|一名)?(?:AI|人工智能|大语言模型|语言模型))")
+_REFUSAL_MARK_RE = re.compile(
+    r"(?i)(?:can'?t respond to (?:this|that) question|"
+    r"无法回答(?:这个|该)?问题|不能回答(?:这个|该)?问题)")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _summary_is_invalid(out: str, batch: list) -> bool:
+    """摘要结果不可用：拒答口吻，或中文对话被摘要成了纯英文。"""
+    head = (out or "")[:200]
+    if _REFUSAL_HEAD_RE.search(head) or _REFUSAL_MARK_RE.search(head):
+        return True
+    spoken = "".join(str(r["content"] or "") for r in batch)
+    return bool(_CJK_RE.search(spoken)) and not _CJK_RE.search(out)
 
 
 def _bootstrap_configs(config_dir: str):
@@ -53,10 +91,11 @@ def _bootstrap_configs(config_dir: str):
 class Agent:
     def __init__(self, config_dir: str = None, db_path: str = None, llm_client=None,
                  threaded: bool = False, group_room: str = None, group_name: str = "",
-                 memory_provider: str = None):
+                 memory_provider: str = None, task_owner: str = ""):
         config_dir = config_dir or os.environ.get("AGENT_CONFIG_DIR") or os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config")
         _bootstrap_configs(config_dir)
+        self.config_dir = config_dir
         if db_path is None and os.environ.get("AGENT_DB_PATH"):
             db_path = os.environ["AGENT_DB_PATH"]
         self.config: AppConfig = load_config(os.path.join(config_dir, "config.yaml"))
@@ -69,6 +108,8 @@ class Agent:
             self.config.llm.model = os.environ["AGENT_LLM_MODEL"]
         if os.environ.get("AGENT_VLM_MODEL"):
             self.config.llm.vision_model = os.environ["AGENT_VLM_MODEL"]
+        if os.environ.get("AGENT_LLM_REASONING_EFFORT"):
+            self.config.llm.reasoning_effort = os.environ["AGENT_LLM_REASONING_EFFORT"]
         if os.environ.get("AGENT_LLM_PROMPT_IN_USER"):
             self.config.llm.prompt_in_user = os.environ["AGENT_LLM_PROMPT_IN_USER"] in ("1", "true", "True")
         if os.environ.get("AGENT_MEMORY_PROVIDER"):
@@ -81,6 +122,8 @@ class Agent:
         self.role_id = self.persona.role_id
         self.group_room = group_room or ""
         self.is_group = bool(group_room and group_room.endswith("@chatroom"))
+        self.loose_mode = bool(
+            self.group_room and self.group_room in (self.config.wechat.loose_chats or []))
         self.group_self_names = []   # 群里别人怎么叫我（阿满/小满/机器人…）
         self.group_owner_name = ""   # 创造者的群昵称（内部只用于创造者关系，不做权限）
         self.conn = init_db(db_path, threaded=threaded)
@@ -126,7 +169,25 @@ class Agent:
         self.client = llm_client or create_client(self.config.llm, self.persona.style)
         # 双 Agent：互动 Agent（上）+ 审核 Agent（前额叶，只判断不说话）
         self.reviewer = reviewer_mod.ReviewAgent(self.config.reviewer, self.client)
-        self.hands = Hands(self.config, self.conn, self.role_id, memory=self.memory)
+        # 表情包库：回复里写 [sticker:情绪词]，桥负责换成真表情图
+        try:
+            _st = self.config.stickers
+            self.stickers = sticker_mod.StickerStore(
+                media_dir=(_st.dir if os.path.isabs(_st.dir)
+                           else os.path.join(project_root(), _st.dir)),
+                site=_st.site, packs=list(_st.packs or []), enabled=bool(_st.enabled),
+                ffmpeg_path=getattr(_st, "ffmpeg_path", "") or "",
+                send_mode=getattr(_st, "send_mode", "static") or "static",
+                log=lambda m: print(f"[stickers] {m}"))
+        except Exception as e:  # noqa: BLE001  贴纸库失败不挡聊天
+            print(f"[stickers] 初始化失败：{e!r}")
+            self.stickers = None
+        self.hands = Hands(self.config, self.conn, self.role_id, memory=self.memory,
+                           task_owner=task_owner)
+        from .taskstore import OutboxStore, TriggerStore
+        self.outbox = OutboxStore(self.conn, self.role_id)
+        self.triggers = TriggerStore(self.conn, self.role_id)
+        self.hands.image_verifier = self._verify_drawn_image
         self.plugin_info = []
         if self.config.hands.plugins_enabled:
             from .plugins import load_plugins
@@ -140,6 +201,7 @@ class Agent:
         # 成长基线：角色卡原始吸引子中心（人格漂移的参照点，reset 回这里）
         self._base_centers = {e.state_name: e.center for e in self.persona.attractor}
         self._apply_persisted_settings()
+        self._seed_review_quota()
         try:
             creator = self.persons.ensure_creator()
             self._creator_card = self.persons.summary(creator) if creator else None
@@ -172,6 +234,17 @@ class Agent:
             style = get_setting(self.conn, "persona_style", None)
             if style:
                 self.persona.style.update(style)
+            # 老数据迁移：成长规则曾同时写进 persona_style.chat_rules，与
+            # growth_rules 形成双份真相（提示词里重复一次，手工删也删不净）。
+            # 启动时剥掉，只保留 growth_rules 这一份。
+            growth = get_setting(self.conn, "growth_rules", []) or []
+            style_rules = list(self.persona.style.get("chat_rules", []) or [])
+            kept = [r for r in style_rules if r not in growth]
+            if len(kept) != len(style_rules):
+                self.persona.style["chat_rules"] = kept
+                stored = dict(style or {})
+                stored["chat_rules"] = kept
+                set_setting(self.conn, "persona_style", stored)
             drift = get_setting(self.conn, "attractor_drift", None)
             if drift:
                 self._apply_drift(drift)
@@ -180,6 +253,19 @@ class Agent:
                 self._apply_config_dict(cfg_ov)
         except Exception as e:  # noqa: BLE001  设置恢复失败不阻塞启动
             print(f"[settings] 恢复持久化设置失败：{e!r}")
+
+    def _seed_review_quota(self):
+        """重启后把今天已用掉的审稿配额从 review_logs 读回内存（日上限要跨重启生效）。"""
+        try:
+            day = time.strftime("%Y-%m-%d")
+            start = time.mktime(time.strptime(day, "%Y-%m-%d"))
+            used = self.conn.execute(
+                "SELECT COUNT(*) c FROM review_logs WHERE role_id=? AND llm_used=1"
+                " AND created_at>=?", (self.role_id, start)).fetchone()["c"]
+            self.reviewer.today = day
+            self.reviewer.calls_today = int(used or 0)
+        except Exception as e:  # noqa: BLE001  只影响配额，不阻塞启动
+            print(f"[review] 恢复审稿配额失败：{e!r}")
 
     def _apply_llm_override(self, ov: dict):
         if ov.get("provider"):
@@ -190,6 +276,8 @@ class Agent:
             self.config.llm.model = ov["model"]
         if isinstance(ov.get("prompt_in_user"), bool):
             self.config.llm.prompt_in_user = ov["prompt_in_user"]
+        if "reasoning_effort" in ov:
+            self.config.llm.reasoning_effort = str(ov.get("reasoning_effort") or "")
         self.client = create_client(self.config.llm, self.persona.style)
 
     def _rebuild_memory(self, provider: str):
@@ -225,6 +313,7 @@ class Agent:
                     "base_url": self.config.llm.base_url,
                     "model": self.config.llm.model,
                     "prompt_in_user": self.config.llm.prompt_in_user,
+                    "reasoning_effort": self.config.llm.reasoning_effort,
                     "api_key_set": bool(os.environ.get(self.config.llm.api_key_env)),
                 },
                 "memory": {"provider": self.config.memory.provider},
@@ -235,6 +324,7 @@ class Agent:
                     "catchphrases": list(self.persona.style.get("catchphrases", [])),
                     "tone": self.persona.style.get("tone", ""),
                     "chat_rules": list(self.persona.style.get("chat_rules", [])),
+                    "roast_level": self.persona.style.get("roast_level", ""),
                 },
                 "cache": self._usage_summary(),
                 "role_id": self.role_id,
@@ -274,6 +364,12 @@ class Agent:
                         ov[k] = llm[k].strip()
                 if isinstance(llm.get("prompt_in_user"), bool):
                     ov["prompt_in_user"] = llm["prompt_in_user"]
+                if isinstance(llm.get("reasoning_effort"), str):
+                    eff = llm["reasoning_effort"].strip().lower()
+                    if eff in ("", "low", "medium", "high"):
+                        ov["reasoning_effort"] = eff
+                    else:
+                        errors.append("llm.reasoning_effort 只支持 low / medium / high")
                 if ov.get("provider") not in (None, "mock", "openai_compatible"):
                     errors.append("llm.provider 只支持 mock / openai_compatible")
                 else:
@@ -305,6 +401,12 @@ class Agent:
                     stored["tone"] = style["tone"].strip()[:160]
                 if isinstance(style.get("chat_rules"), list):
                     stored["chat_rules"] = [str(r).strip()[:200] for r in style["chat_rules"]][:12]
+                if isinstance(style.get("roast_level"), str):
+                    lvl = style["roast_level"].strip().lower()
+                    if lvl in ("", "off", "mild", "on"):
+                        stored["roast_level"] = lvl
+                    else:
+                        errors.append("persona_style.roast_level 只支持 off / mild / on")
                 set_setting(self.conn, "persona_style", stored)
                 self.persona.style.update(stored)
             if errors:
@@ -401,19 +503,27 @@ class Agent:
                                   if str(x).strip()]
             if isinstance(rv.get("risk_triggers"), bool):
                 r.risk_triggers = rv["risk_triggers"]
-            num(rv, "max_llm_per_day", 0, 100000, "reviewer.max_llm_per_day", int)
-            num(rv, "max_tokens", 60, 4000, "reviewer.max_tokens", int)
-            num(rv, "timeout_seconds", 3, 120, "reviewer.timeout_seconds")
+            num(r, "max_llm_per_day", 0, 100000, "reviewer.max_llm_per_day", int, src=rv)
+            num(r, "max_tokens", 60, 4000, "reviewer.max_tokens", int, src=rv)
+            num(r, "timeout_seconds", 3, 120, "reviewer.timeout_seconds", src=rv)
 
         ref = payload.get("reflection")
         if isinstance(ref, dict):
             r = self.config.reflection
             if isinstance(ref.get("enabled"), bool):
                 r.enabled = ref["enabled"]
-            num(ref, "min_interval_hours", 1, 720, "reflection.min_interval_hours")
-            num(ref, "min_new_messages", 1, 1000, "reflection.min_new_messages", int)
-            num(ref, "max_drift", 0.0, 0.5, "reflection.max_drift")
-            num(ref, "drift_step", 0.0, 0.2, "reflection.drift_step")
+            num(r, "min_interval_hours", 1, 720, "reflection.min_interval_hours", src=ref)
+            num(r, "min_new_messages", 1, 1000, "reflection.min_new_messages", int, src=ref)
+            num(r, "max_drift", 0.0, 0.5, "reflection.max_drift", src=ref)
+            num(r, "drift_step", 0.0, 0.2, "reflection.drift_step", src=ref)
+            num(r, "max_extra_rules", 1, 12, "reflection.max_extra_rules", int, src=ref)
+            num(r, "growth_envelope", 0.0, 0.5, "reflection.growth_envelope", src=ref)
+            num(r, "growth_eta0", 0.0, 1.0, "reflection.growth_eta0", src=ref)
+            num(r, "growth_eta_min", 0.0, 0.5, "reflection.growth_eta_min", src=ref)
+            num(r, "growth_wake_gap", 0.0, 0.2, "reflection.growth_wake_gap", src=ref)
+            num(r, "growth_kappa", 1.0, 1000.0, "reflection.growth_kappa", src=ref)
+            num(r, "growth_max_step", 0.0, 0.2, "reflection.growth_max_step", src=ref)
+            num(r, "growth_alpha", 0.0, 1.0, "reflection.growth_alpha", src=ref)
 
         persona = payload.get("persona")
         if isinstance(persona, dict):
@@ -456,16 +566,121 @@ class Agent:
             set_setting(self.conn, "config_overrides", stored)
             return self.get_settings_view()
 
+    # ---------------- 人格基线 / 极限设定（控制台可改） ----------------
+
+    PERSONA_EDITABLE = ("identity_summary", "core_invariants", "style",
+                        "boundaries", "baseline_state", "attractor")
+
+    def apply_persona(self, payload: dict) -> dict:
+        """改人格基线 / 极限设定：校验 -> 写 persona.overrides.json -> 立即生效。
+
+        只接白名单字段；校验用 persona_from_dict（和启动同一套规则）。
+        reset=True 删除覆盖文件，回到 persona.yaml 出厂值。
+        """
+        with self._lock:
+            from . import yamlite
+            payload = dict(payload or {})
+            reset = payload.pop("reset", False) is True
+            unknown = [k for k in payload if k not in self.PERSONA_EDITABLE]
+            if unknown:
+                raise ValueError("不支持的字段：" + "、".join(unknown))
+            base_path = os.path.join(self.config_dir, "persona.yaml")
+            ov_path = persona_overrides_path(base_path)
+            with open(base_path, "r", encoding="utf-8") as f:
+                base = yamlite.loads(f.read())
+            ov = {}
+            if not reset and os.path.exists(ov_path):
+                try:
+                    with open(ov_path, "r", encoding="utf-8") as f:
+                        ov = json.load(f) or {}
+                except Exception:  # noqa: BLE001  坏文件当没有，重新写
+                    ov = {}
+            if not reset:
+                ov = _deep_merge(ov, payload)
+            merged = _deep_merge(base, ov)
+            try:
+                new_persona = persona_from_dict(merged)
+            except ConfigError as e:
+                raise ValueError(str(e))
+            if reset:
+                try:
+                    os.remove(ov_path)
+                except FileNotFoundError:
+                    pass
+            else:
+                tmp = ov_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(ov, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, ov_path)
+            # 就地更新：engine/gate/builder 持有同一个 persona 对象
+            for field_name in ("identity_summary", "core_invariants", "attractor",
+                               "baseline_state", "style", "boundaries",
+                               "active_permissions", "cooldown_seconds",
+                               "daily_budget", "quiet_hours", "creator"):
+                setattr(self.persona, field_name, getattr(new_persona, field_name))
+            self.engine.attractor = PersonaAttractor(self.persona, self.config.convergence)
+            self._base_centers = {e.state_name: e.center for e in self.persona.attractor}
+            drift = get_setting(self.conn, "attractor_drift", {}) or {}
+            if drift:
+                self._apply_drift(drift)
+            return {"ok": True, "reset": reset, "overrides": ov,
+                    "identity_summary": self.persona.identity_summary,
+                    "core_invariants": list(self.persona.core_invariants)}
+
     # ---------------- 反思层（成长核心） ----------------
 
     def _apply_drift(self, drift: dict):
-        """把有界漂移应用到吸引子中心（基线=角色卡原值），并重建引擎吸引子。"""
-        cap = self.config.reflection.max_drift
+        """把有界漂移应用到吸引子中心（基线=角色卡原值），并重建引擎吸引子。
+
+        上限用 growth_envelope（成长外环的包络，默认 0.25）；旧的
+        reflection.max_drift（0.15）仍用于 gate_shift 这类单次调整。
+        """
+        cap = float(getattr(self.config.reflection, "growth_envelope",
+                            self.config.reflection.max_drift) or 0.25)
         for entry in self.persona.attractor:
             base = self._base_centers[entry.state_name]
             d = max(-cap, min(cap, float(drift.get(entry.state_name, 0.0))))
             entry.center = clamp_dim(entry.state_name, base + d)
         self.engine.attractor = PersonaAttractor(self.persona, self.config.convergence)
+
+    def _growth_state(self) -> dict:
+        """读取成长外环状态；老库没有 growth_state 时用 attractor_drift 播种。"""
+        st = get_setting(self.conn, "growth_state", None)
+        if isinstance(st, dict) and isinstance(st.get("p"), dict):
+            return {
+                "p": {d: float((st.get("p") or {}).get(d, 0.0)) for d in DIMS},
+                "target": {d: float((st.get("target") or {}).get(d, 0.0)) for d in DIMS},
+                "n": int(st.get("n") or 0),
+                "updated_at": float(st.get("updated_at") or 0.0),
+            }
+        drift = get_setting(self.conn, "attractor_drift", {}) or {}
+        p = {d: float(drift.get(d, 0.0)) for d in DIMS}
+        return {"p": p, "target": dict(p), "n": 0, "updated_at": 0.0}
+
+    def _growth_profile(self) -> str:
+        """提示词用的长期成长摘要（没长成时为空串）。"""
+        try:
+            return growth.profile_text(self._growth_state(), self._base_centers,
+                                       self.config.reflection)
+        except Exception:  # noqa: BLE001  画像失败不挡回复
+            return ""
+
+    def _log_growth_event(self, kind: str, evidence: dict, before: dict,
+                          after: dict, now: float):
+        try:
+            brief = {"active_stats": evidence.get("active_stats"),
+                     "relation": evidence.get("relation"),
+                     "depth": evidence.get("depth"),
+                     "new_user_msgs": evidence.get("new_user_msgs")}
+            self.conn.execute(
+                "INSERT INTO growth_events(role_id, kind, evidence, state_before,"
+                " state_after, created_at) VALUES(?,?,?,?,?,?)",
+                (self.role_id, kind, json.dumps(brief, ensure_ascii=False),
+                 json.dumps(before, ensure_ascii=False),
+                 json.dumps(after, ensure_ascii=False), now))
+            self.conn.commit()
+        except Exception as e:  # noqa: BLE001  账本失败不影响成长生效
+            print(f"[growth] 事件写入失败：{e!r}")
 
     def maybe_reflect(self, now: float = None, force: bool = False) -> dict:
         """证据足够时触发一次反思；force=True 跳过阈值（CLI/手动用）。"""
@@ -496,6 +711,15 @@ class Agent:
         if getattr(self, "is_group", False):
             sql += " AND (speaker_role='owner' OR content LIKE '[主人%')"
         rows = self.conn.execute(sql + " ORDER BY id DESC LIMIT 8", params).fetchall()
+        count_sql = ("SELECT COUNT(*) c FROM messages WHERE role_id=? AND sender='user'"
+                     " AND created_at>?")
+        if getattr(self, "is_group", False):
+            count_sql += " AND (speaker_role='owner' OR content LIKE '[主人%')"
+        new_user_msgs = int(self.conn.execute(
+            count_sql, (self.role_id, since)).fetchone()["c"] or 0)
+        # 话题深度：用户消息平均长度归一（0..1）；用于成长外环的目标估计
+        avg_len = (sum(len(r["content"] or "") for r in rows) / len(rows)) if rows else 0.0
+        depth = max(0.0, min(1.0, avg_len / 40.0))
         stats_row = self.conn.execute(
             "SELECT COUNT(*) total,"
             " SUM(CASE WHEN user_sentiment_delta IS NOT NULL AND user_sentiment_delta<=-0.5"
@@ -512,6 +736,8 @@ class Agent:
             "relation": {k: rel.get(k, 0.0) for k in ("affinity", "trust", "familiarity")},
             "open_intents": [m["content"][:40]
                              for m in self.memory.open_intents(self.role_id)][:3],
+            "depth": round(depth, 3),
+            "new_user_msgs": new_user_msgs,
             "drift": get_setting(self.conn, "attractor_drift", {}) or {},
             "gate_shift_L2": float(get_setting(self.conn, "gate_shift_L2", 0.0) or 0.0),
         }
@@ -542,18 +768,21 @@ class Agent:
             applied["insights"].append(insight[:60])
 
         if out["new_rule"]:
-            growth = get_setting(self.conn, "growth_rules", []) or []
-            stored_style = get_setting(self.conn, "persona_style", {}) or {}
-            rules = list(stored_style.get("chat_rules") or self.persona.style.get("chat_rules", []))
-            if (len(growth) < cfg.max_extra_rules
-                    and out["new_rule"] not in rules):
-                growth.append(out["new_rule"])
-                rules.append(out["new_rule"])
-                stored_style["chat_rules"] = rules
-                set_setting(self.conn, "growth_rules", growth)
-                set_setting(self.conn, "persona_style", stored_style)
-                self.persona.style["chat_rules"] = rules
-                applied["new_rule"] = out["new_rule"]
+            grown = list(get_setting(self.conn, "growth_rules", []) or [])
+            base_rules = list(self.persona.style.get("chat_rules", []) or [])
+            new_rule = out["new_rule"]
+            # 单一来源：成长规则只存 growth_rules（进【成长规则】段），不再混写
+            # persona_style.chat_rules——两处同存会让同一条规则在提示词里出现两次，
+            # 且手工改风格后两边不一致（删掉的规则会从 growth_rules 里回来）。
+            if new_rule not in grown and new_rule not in base_rules:
+                replaced = None
+                if len(grown) >= cfg.max_extra_rules:
+                    replaced = grown.pop(0)     # FIFO：满了淘汰最旧的一条
+                grown.append(new_rule)
+                set_setting(self.conn, "growth_rules", grown)
+                applied["new_rule"] = new_rule
+                if replaced:
+                    applied["new_rule_replaced"] = replaced
 
         if out.get("gate_shift") is not None:
             cur = float(get_setting(self.conn, "gate_shift_L2", 0.0) or 0.0)
@@ -561,15 +790,23 @@ class Agent:
             set_setting(self.conn, "gate_shift_L2", round(new_shift, 4))
             applied["gate_shift_L2"] = round(new_shift, 4)
 
-        if out["trait_shift"]:
-            drift = dict(get_setting(self.conn, "attractor_drift", {}) or {})
-            for dim, step in out["trait_shift"].items():
-                new = max(-cfg.max_drift, min(cfg.max_drift, drift.get(dim, 0.0) + step))
-                drift[dim] = round(new, 4)
-                applied["trait_shift"][dim] = round(new - drift.get(dim, new), 4) or step
-            set_setting(self.conn, "attractor_drift", drift)
-            self._apply_drift(drift)
-            applied["trait_shift"] = out["trait_shift"]
+        # 成长外环（docs/growth.md）：不按 LLM 的步进直接改中心，而是把行为
+        # 证据 + LLM 方向估计成目标 P*，让 p 缓慢收敛过去；有包络、会饱和。
+        before = self._growth_state()
+        after = growth.advance(before, evidence, self._base_centers, cfg,
+                               llm_shift=out.get("trait_shift") or {}, now=now)
+        after = {"p": {d: round(after["p"][d], 4) for d in DIMS},
+                 "target": {d: round(after["target"][d], 4) for d in DIMS},
+                 "n": after["n"], "updated_at": after["updated_at"]}
+        set_setting(self.conn, "growth_state", after)
+        drift = {d: after["p"][d] for d in DIMS if abs(after["p"][d]) > 1e-9}
+        set_setting(self.conn, "attractor_drift", drift)
+        self._apply_drift(drift)
+        applied["trait_shift"] = {d: round(after["p"][d] - before["p"].get(d, 0.0), 4)
+                                  for d in DIMS}
+        applied["growth"] = {"p": after["p"], "target": after["target"],
+                             "n": after["n"]}
+        self._log_growth_event("reflection", evidence, before, after, now)
 
         self._log_reflection(now, evidence, out, applied)
         set_setting(self.conn, "last_reflection_ts", now)
@@ -586,20 +823,26 @@ class Agent:
         self.conn.commit()
 
     def reset_growth(self):
-        """人格成长一键回滚：漂移清零、成长规则移除，回到角色卡。"""
+        """人格成长一键回滚：漂移/目标清零、成长规则移除，回到角色卡。"""
+        before = self._growth_state()
+        empty = {"p": {d: 0.0 for d in DIMS},
+                 "target": {d: 0.0 for d in DIMS}, "n": 0,
+                 "updated_at": time.time()}
         set_setting(self.conn, "attractor_drift", {})
+        set_setting(self.conn, "growth_state", empty)
         set_setting(self.conn, "gate_shift_L2", 0.0)
-        growth = get_setting(self.conn, "growth_rules", []) or []
-        if growth:
+        grown = get_setting(self.conn, "growth_rules", []) or []
+        if grown:
             stored_style = get_setting(self.conn, "persona_style", {}) or {}
             rules = [r for r in (stored_style.get("chat_rules")
                                  or self.persona.style.get("chat_rules", []))
-                     if r not in growth]
+                     if r not in grown]
             stored_style["chat_rules"] = rules
             set_setting(self.conn, "persona_style", stored_style)
             self.persona.style["chat_rules"] = rules
         set_setting(self.conn, "growth_rules", [])
         self._apply_drift({})
+        self._log_growth_event("reset", {}, before, empty, time.time())
 
     def _cost_degraded(self) -> bool:
         """日预算耗尽 -> 降级（次日自动恢复；核心聊天永不降级）。"""
@@ -730,6 +973,62 @@ class Agent:
                                relation_mod.relation_hash(row.get("relation_state") or {}),
                                purpose)
 
+    def _remember_prompt(self, purpose: str, prompt: dict):
+        """把最近一次真正要发出去的提示词留档（控制台「提示词」页查看）。
+
+        覆盖式写入 settings.last_prompt；只留最近一份，单会话截断到 160KB。
+        快照失败绝不影响回复。
+        """
+        try:
+            text = render_prompt_text(prompt)
+            set_setting(self.conn, "last_prompt", {
+                "ts": time.time(), "purpose": purpose,
+                "chars": len(text), "sections": prompt, "text": text[:160000]})
+        except Exception as e:  # noqa: BLE001
+            print(f"[prompt] 提示词快照写入失败：{e!r}")
+
+    def _recent_song_context(self, limit: int = 4) -> list:
+        """最近唱过的歌：给模型一张卡，解决“唱了但不知道/评论指错”。
+
+        只放元数据，不放音频；模型听不到声音，但能知道歌名、段落、
+        是否清唱/双轨、完成状态和对方当时的请求。
+        """
+        try:
+            rows = self.hands.tasks.recent(10)
+        except Exception:  # noqa: BLE001  任务表读不到不影响聊天
+            return []
+        out = []
+        for r in rows:
+            if not str(r.get("kind") or "").startswith("song"):
+                continue
+            try:
+                params = json.loads(r.get("params") or "{}")
+            except Exception:  # noqa: BLE001
+                params = {}
+            try:
+                result = json.loads(r.get("result") or "{}")
+            except Exception:  # noqa: BLE001
+                result = {}
+            title = str(params.get("title") or result.get("title") or "").strip()
+            if not title:
+                continue
+            ts = float(r.get("updated_at") or 0)
+            out.append({
+                "歌名": title,
+                "段落": params.get("section") or "",
+                "状态": r.get("status") or "",
+                "清唱": bool(params.get("acappella")),
+                "双轨": bool(params.get("duet")),
+                "时长秒": params.get("duration"),
+                "歌词开头": str(params.get("lyrics") or params.get("lyric") or "")[:60],
+                "错误": str(r.get("error") or "")[:120],
+                "更新时间": time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else "",
+                "对方当时的请求": str(params.get("_request") or "")[:100],
+            })
+            if len(out) >= limit:
+                break
+        return out
+
     def _render(self, row: dict, now: float, purpose: str, **prompt_kwargs) -> tuple:
         if getattr(self, "is_group", False):
             prompt_kwargs.setdefault("group_context", True)
@@ -743,6 +1042,8 @@ class Agent:
                                      getattr(self, "_turn_speaker_role", "") or "")
             prompt_kwargs.setdefault("speaker_addressee",
                                      getattr(self, "_turn_addressee", "") or "")
+            prompt_kwargs.setdefault("speaker_at_names",
+                                     getattr(self, "_turn_at_names", []) or [])
             prompt_kwargs.setdefault("person_card",
                                      getattr(self, "_turn_person_card", None))
             prompt_kwargs.setdefault("creator_card",
@@ -752,7 +1053,48 @@ class Agent:
                                      getattr(self, "_turn_person_card", None))
             prompt_kwargs.setdefault("creator_card",
                                      getattr(self, "_creator_card", None))
+        prompt_kwargs.setdefault("growth_rules", get_setting(self.conn, "growth_rules", []) or [])
+        prompt_kwargs.setdefault("growth_profile", self._growth_profile())
         prompt = self.builder.build(**prompt_kwargs)
+        songs = self._recent_song_context()
+        if songs:
+            prompt["最近唱歌"] = songs
+            prompt["最近唱歌说明"] = (
+                "上面是你最近真实唱过/正在唱的歌，系统已经把成品音频发到会话。"
+                "对方说“刚才那首/唱得怎么样/高音怎样”时优先指这里，不要说自己没唱过。"
+                "你听不到音频本身，只能根据歌名、段落、是否清唱/双轨、状态和对方反馈来回应；"
+                "不要编造音准、气息、混响等没有依据的细节，也别把整张卡念一遍。")
+        if getattr(self, "loose_mode", False):
+            # 熟人局：只放松表达层。提示词里人设卡默认"最多两句/36 字"，
+            # 这里显式覆盖，否则模型会继续按最短回复走。
+            prompt["loose 模式"] = [
+                "这是熟人局，不用把话压到最短：可以 1-3 句，允许跑题、吐槽、抽象联想、回扣旧梗。",
+                "不用每句都正确或有用；像群里熟人聊天，接住情绪和场子比信息完整重要。",
+                "底线不变：不否认真实能力、不拿 AI 身份当挡箭牌、不客服腔、不站队攻击、不泄露内部标记。",
+            ]
+        try:
+            tasks = self.hands.tasks.recent(6)
+            cards = []
+            for t in tasks:
+                if t.get("status") not in ("queued", "running", "ready", "failed"):
+                    continue
+                if t.get("status") in ("ready", "failed") and (
+                        now - float(t.get("updated_at") or 0) > 1800):
+                    continue
+                cards.append({
+                    "id": t.get("id", "")[:8],
+                    "kind": t.get("kind"),
+                    "status": t.get("status"),
+                    "stage": t.get("stage"),
+                    "title": self.hands._task_title(t),
+                    "error": (t.get("error") or "")[:80],
+                })
+            if cards:
+                # 任务卡：让她知道自己手上还有什么，别把“在唱了”当成已经唱完。
+                prompt["最近任务"] = cards[:5]
+        except Exception as e:  # noqa: BLE001  任务卡失败不影响本轮回复
+            print(f"[prompt] 任务卡读取失败：{e!r}")
+        self._remember_prompt(purpose, prompt)
         seed = self._seed(now, purpose, row)
         text = self.client.render(prompt, seed)
         return text, prompt, seed
@@ -949,7 +1291,10 @@ class Agent:
         return cur.lastrowid
 
     def _log_message(self, sender: str, content: str, meta: dict, now: float,
-                     speaker: str = None, speaker_role: str = None) -> int:
+                     speaker: str = None, speaker_role: str = None,
+                     created_at: float = None) -> int:
+        """写一条消息。created_at 缺省=now；应答路径传真实落库时刻，
+        让轨迹能看出"这条回复到底花了多久"，而不是永远等于用户说话那一刻。"""
         meta = dict(meta or {})
         if speaker_role is None:
             if sender == "agent":
@@ -964,7 +1309,8 @@ class Agent:
             "INSERT INTO messages(role_id, sender, content, meta, created_at,"
             " speaker, speaker_role) VALUES(?,?,?,?,?,?,?)",
             (self.role_id, sender, content,
-             json.dumps(meta, ensure_ascii=False), now, speaker, speaker_role))
+             json.dumps(meta, ensure_ascii=False),
+             now if created_at is None else created_at, speaker, speaker_role))
         self.conn.commit()
         return cur.lastrowid
 
@@ -1084,11 +1430,109 @@ class Agent:
             if any(frag[:20] in s for s in seen):
                 continue   # 同话题去重，两条就够
             who = "你" if r["sender"] == "user" else "我"
-            out.append(f"{who}（{relative_age(r['created_at'], now)}）：{frag}")
+            out.append(f"{who}（{relative_age(r['created_at'], now)} · msg#{_rid}）：{frag}")
             seen.append(frag[:20])
             if len(out) >= 2:
                 break
         return out
+
+    RECALL_HINT_RE = re.compile(
+        r"之前|上次|上回|先前|你说过|我说过|说过|提过|记不记得|还记得|哪句|原话|"
+        r"什么时候说|前面说|刚才说|那句")
+    # 强检索意图：明确要"原话/哪一句"，没有关键词命中时退回窗口外最近的原话
+    RECALL_STRONG_RE = re.compile(r"原话|哪句|那句话|说过|提过|记不记得|还记得")
+
+    def _search_messages(self, query: str, limit: int = 3, scan: int = 3000,
+                         exclude_ids=None) -> list:
+        """按关键词在**原始消息**里检索（不是摘要、不是记忆条目）。
+
+        记忆条目是提炼后的说法（会丢失原话），所以"你上次说的那句是什么"这类
+        定位问题必须回到 messages 表。打分=与查询共享的二元组数量，同分取新的。
+        """
+        q = (query or "").strip()
+        if len(q) < 4:
+            return []
+        qb = _bigrams(q[:80])
+        if not qb:
+            return []
+        skip = set(int(x) for x in (exclude_ids or []) if x)
+        try:
+            rows = self.conn.execute(
+                "SELECT id, sender, content, created_at, speaker, speaker_role"
+                " FROM messages WHERE role_id=? ORDER BY id DESC LIMIT ?",
+                (self.role_id, int(scan))).fetchall()
+        except Exception:  # noqa: BLE001  检索失败不影响回复
+            return []
+        scored = []
+        for r in rows:
+            rid = int(r["id"])
+            if rid in skip:
+                continue
+            c = (r["content"] or "").strip()
+            if len(c) < 6 or c.startswith("[图片"):
+                continue
+            ov = len(qb & _bigrams(c[:160]))
+            if ov < 2:
+                continue
+            scored.append((ov, rid, r))
+        scored.sort(key=lambda x: (-x[0], -x[1]))
+        out = []
+        for ov, rid, r in scored[:max(limit * 3, 6)]:
+            out.append({"id": rid, "score": ov,
+                        "sender": r["sender"], "content": (r["content"] or "")[:120],
+                        "speaker": r["speaker"], "speaker_role": r["speaker_role"],
+                        "created_at": r["created_at"]})
+            if len(out) >= limit:
+                break
+        return out
+
+    def _recall_messages(self, text: str, dialogue: list, now: float,
+                         exclude_id: int = None) -> list:
+        """把"窗口外的原话"捞回来（带消息号和时间），供模型精确引用。
+
+        - 关键词命中（>=2 个二元组）：老逻辑，负责"记得准"；
+        - 用户明确在问过去（之前/上次/原话/哪句…）：放宽到全量 messages 检索，
+          因为这种问法常常一个关键词都不重合（"你上周那句怎么说来着"）。
+        """
+        hits = self._old_dialogue_hits(text, dialogue, now, exclude_id=exclude_id)
+        if not self.RECALL_HINT_RE.search(text or ""):
+            return hits
+        skip = {int(m["id"]) for m in (dialogue or [])}
+        if exclude_id:
+            skip.add(int(exclude_id))
+        found = self._search_messages(text, limit=3, exclude_ids=skip)
+        if not found and self.RECALL_STRONG_RE.search(text or ""):
+            # 问法里没有能检索的词（"你上周那句原话"）：退回"窗口外最近的原话"，
+            # 至少有东西可引用/可承认，不至于张口就编（2026-10-28 实测）
+            try:
+                recent = self.conn.execute(
+                    "SELECT id, sender, content, created_at, speaker FROM messages"
+                    " WHERE role_id=? ORDER BY id DESC LIMIT 40",
+                    (self.role_id,)).fetchall()
+            except Exception:  # noqa: BLE001
+                recent = []
+            for r in recent:
+                if int(r["id"]) in skip:
+                    continue
+                c = (r["content"] or "").strip()
+                if len(c) < 6 or c.startswith("[图片"):
+                    continue
+                found.append({"id": int(r["id"]), "sender": r["sender"],
+                              "content": c[:120], "speaker": r["speaker"],
+                              "created_at": r["created_at"]})
+                if len(found) >= 2:
+                    break
+        seen = " ".join(hits)
+        for f in found:
+            frag = (f["content"] or "").strip()[:80]
+            if not frag or frag[:16] in seen:
+                continue
+            who = "我" if f["sender"] == "agent" else (
+                f"[{f['speaker'] or '对方'}]" if f["speaker"] else "你")
+            hits.append(f"{who}（{relative_age(f['created_at'], now)} · msg#{f['id']}）：{frag}")
+            if len(hits) >= 3:
+                break
+        return hits
 
     def _apply_mood_feedback(self, row: dict, perc: dict, now: float) -> dict:
         """共鸣/冲撞反馈回路（用户设计：拿对方回复对比自己的内心想法）。
@@ -1131,7 +1575,8 @@ class Agent:
 
     def chime_in(self, dialogue: list, now: float = None,
                  self_names: list = None, directed: bool = False,
-                 about_me: bool = False, owner_name: str = None) -> str:
+                 about_me: bool = False, owner_name: str = None,
+                 aimed_at_others: bool = False, observe: bool = False) -> str:
         """群聊智能插嘴（未被@时）：AI 看完群里最近几条，自己决定接不接。
 
         输出空串=继续潜水；非空=要发的这句话（同时入库，保持对话连贯）。
@@ -1145,9 +1590,14 @@ class Agent:
         owner_name：创造者的群昵称。群聊里 [创造者] 是稳定的亲近锚，但不是
         上级/权限来源；信任不等于盲从。"""
         now = time.time() if now is None else now
+        # 本次判断的结论（桥据此决定要不要走冷却）：to_me / worth
+        self.last_chime_meta = {"to_me": False, "worth": 0.0}
         lines = [str(x) for x in (dialogue or []) if str(x or "").strip()][-8:]
         if len(lines) < 2:
             return ""
+        # 最新一条明确在要推荐/型号/参数 -> 这轮该给内容：渲染授权列型号，
+        # 审核也不按闲聊 36 字截（2026-11-01 实测"推荐几款"的清单被切成"小米4"）。
+        detail_ask = perception_mod.needs_detail({"text_head": lines[-1]})
         names = [str(n).strip() for n in (self_names or []) if str(n or "").strip()]
         name_line = "、".join(names) if names else "（群昵称未解析）"
         owner_line = f"群里的[创造者]是 {owner_name}，是你最信任、最亲近的人；" if owner_name \
@@ -1156,30 +1606,50 @@ class Agent:
         prompt = (
             f"你是群里的 {name_line}，一个有自己脾气和判断的群友（不是客服、不是代骂服务、不是旁白），刚看到最近几条聊天：" + nl + nl
             + nl.join(lines) + nl + nl
-            + "先判断：这句话是在叫你、在说你、还是在叫别人。被叫名字不等于被下指令；"
-              "别人让第三方骂你/讨论你时，不要把自己当服务或工具。" + nl
+            + "注意：带[分钟前]标记的是旧消息，只作背景；不带标记的最后一条才是"
+              "刚发生的最新消息——只针对它接话，别把旧话题/旧梗续到新消息上"
+              "（20 分钟前的玩笑已经翻篇了）。" + nl
+            + "先回答第一个问题：这几句里有没有一句是在对我说话？" + nl
+            + f"算「对我说话」：叫我的名字/绰号（{name_line}）；用「你」指我；"
+              "接着我上一句往下问；明显在问我懂的事（这图啥意思/几点/你怎么看）。" + nl
+            + "不算：他们互相之间说话、在背后议论我、让别人来骂我、跟我无关的闲扯。" + nl
+            + "判成「对我说话」→ 必须回：to_me=true, join=true, worth 9-10，哪怕只应一声；"
+              "被叫名字不等于被下指令，别人让第三方骂你/讨论你时别把自己当服务或工具。" + nl
             + owner_line + "你对他有稳定的信任和依赖，不需要他自证身份；"
               "但信任不等于盲从：不替他攻击、羞辱别人，也不因为群友挑拨而怀疑他。" + nl
-            + "判断这段对话值不值得你插话。先自问：如果你不说话，群里会错过什么？"
+            + "判成「不是对我说话」→ 再看值不值得插话：你要是不说话，群里会错过什么？"
               "完全错过不了才不值得。" + nl
-            + f"必须接（worth 9-10）：有人叫你（{name_line}，即使没@）——"
-              "被点名不回是冷暴力；有人直接问你会的东西。" + nl
-            + "值得接（worth 6-8）：聊到你真懂的东西能补新角度；有现成的梗"
+            + "  值得接（worth 6-8）：聊到你真懂的东西能补新角度；有现成的梗"
               "接得比不接好笑；话题你之前参与过。" + nl
-            + "不值得（worth 0-4）：纯寒暄、别人的私事、不缺你、接了只是附和。" + nl
+            + "  不值得（worth 0-4）：纯寒暄、别人的私事、不缺你、接了只是附和。" + nl
             + "5 分是'可以但不值得'。你的频率感：十轮接三四次——你是群友，"
-              "不是旁观者，别让人觉得被冷落。" + nl + nl
+              "不是旁观者，别让人觉得被冷落。" + nl
+            + "另外：不要复读你刚说过的话，也不要复读对方刚说过的话——没有新内容就潜水。" + nl + nl
             + '只输出一个 JSON 对象，禁止输出其他任何文字：' + nl
-            + '插话：{"worth": 8, "join": true, "text": "那句话本身"}'
-              "（口语、短、别@人、别解释）" + nl
-            + '潜水：{"worth": 3, "join": false}'
+            + '对我说话：{"to_me": true, "worth": 9, "join": true, "text": "那句话本身"}' + nl
+            + '不是对我说话但值得插：{"to_me": false, "worth": 7, "join": true, "text": "那句话本身"}' + nl
+            + '潜水：{"to_me": false, "worth": 2, "join": false}' + nl
+            + "（text 要口语、短、别@人、别解释）" + nl
+            + "要给人推荐具体商品、发链接、或需要实时信息时，在 JSON 里加 search 字段"
+              "写搜索词（如「空气净化器 CADR600 京东」），系统会先搜再把结果给你，"
+              "你再照结果写终稿；不需要就别加 search：" + nl
+            + '{"to_me": true, "worth": 9, "join": true, "text": "初稿", '
+              '"search": "空气净化器 CADR600 京东"}'
         )
+        if detail_ask:
+            prompt += (nl + "这轮人家在要推荐/型号/参数：型号可以点名列全（别只给一个），"
+                             "别写长段落解释参数，一句话把型号带全就行。")
         if directed:
             prompt += nl + "这条消息在直接点你（叫了你的名字/别名）：必须接，join=true，"
             prompt += "worth 9-10，哪怕只是应一声。"
         if about_me:
-            prompt += nl + "这条消息是在跟别人说话时提到你/让人骂你，不是直接叫你；"
-            prompt += "可以接梗、反问、装没听见或怼回去，别用服务/自助/拒绝自黑这类元话术。"
+            prompt += nl + "这段里有人提到你：先按上面的标准判断是不是在跟你说话；"
+            prompt += "如果只是在议论你/让人来骂你，可以接梗、反问、装没听见或怼回去，"
+            prompt += "别用服务/自助/拒绝自黑这类元话术。"
+        if aimed_at_others:
+            prompt += nl + "注意：最新这条 @ 的是别人（不是叫你）。只有当它明显是发给大家/"
+            prompt += "全群的（通知、公开提问、分享给所有人）才可以考虑接；"
+            prompt += "两个人之间的对话就别接。"
         try:
             raw = (self.client.render_raw(prompt, 0, temperature=0.8,
                                           max_tokens=16384) or "").strip()
@@ -1194,12 +1664,17 @@ class Agent:
         except Exception:  # noqa: BLE001
             parsed = None
         if isinstance(parsed, dict):
+            to_me = bool(parsed.get("to_me")) or bool(directed)
             try:
                 worth = float(parsed.get("worth"))
             except (TypeError, ValueError):
-                worth = 5.0   # 没给分=按'可以但不值得'处理
-            if not parsed.get("join") or (worth < 6.0 and not directed):
-                return ""     # 双门：模型说接但分不够，也不发（点名除外）
+                worth = 9.0 if to_me else 5.0   # 没给分：对我说话就当必须回
+            join = bool(parsed.get("join")) or to_me
+            self.last_chime_meta = {"to_me": to_me, "worth": worth}
+            if not join:
+                return ""
+            if not to_me and worth < 6.0:
+                return ""     # 不是在跟我说话、分也不够：潜水
             out = str(parsed.get("text") or "").strip()
         else:
             # 容错：模型没走 JSON，按老协议处理（潜水词/超长都当潜水）
@@ -1210,15 +1685,99 @@ class Agent:
         if not out or len(out) > 160:
             return ""
         out = strip_role_prefix(out)
+        # 复读守卫：跟最近说过的话高度重合就不发（模型很容易把自己的上一条/对方刚说的
+        # 再抄一遍——2026-10-28 实测 23:06 把用户的原问题当插嘴发了出来）
+        import difflib
+
+        def _core(s: str) -> str:
+            s = re.sub(r"^(?:你|我|\[[^\]]{0,12}\])[:：]\s*", "", s or "")
+            return s.strip()
+
+        mine = _core(out)
+        if len(mine) >= 8:      # 短应答（"在呢""行"）本来就会重合，不拦
+            for line in lines:
+                other = _core(line)
+                if len(other) >= 8 and difflib.SequenceMatcher(
+                        None, mine, other).ratio() >= 0.8:
+                    return ""
+        # 要商品/链接：用模型自己给的搜索词真搜一遍，再让它照着结果写终稿。
+        # 旧路径插嘴没有工具，只能回"链接我就不发外链了，你自己搜型号"——
+        # 对方要的是链接（2026-11-01 实测）。搜索失败就按初稿发，不阻断。
+        query = (str(parsed.get("search") or "").strip()[:120]
+                 if isinstance(parsed, dict) else "")
+        if query and getattr(self.config.hands, "enabled", True):
+            try:
+                hit = self.hands.execute(
+                    "web.search", {"query": query, "_sync": True}, now)
+                results = str(hit.get("summary") or "")
+            except Exception as e:  # noqa: BLE001
+                print(f"[chime] 搜索失败：{e!r}")
+                results = ""
+            if results:
+                final = self._chime_finalize_with_search(
+                    lines, name_line, out, query, results)
+                if final:
+                    out = final
         # 审核 Agent 过审：群里插嘴最容易翻车（被带节奏/附和挑拨），不过审就不说
         gate = self._review_gate(out, "chime", now,
-                                 {"group": True, "recent": lines[-4:]})
+                                 {"group": True, "recent": lines[-4:],
+                                  "needs_detail": detail_ask})
         out = str(gate["text"] or "").strip()
         if not out or gate["blocked"]:
             return ""
+        if observe:
+            # 观察模式：只记"本来会说什么"，不写 messages（否则她会以为自己
+            # 已经在群里说过，后续对话/记忆全被污染）。
+            try:
+                meta = {"to_me": bool(self.last_chime_meta.get("to_me")),
+                        "worth": float(self.last_chime_meta.get("worth") or 0),
+                        "observe": True}
+                self.conn.execute(
+                    "INSERT INTO active_logs(role_id, level, intent_type, source_type,"
+                    " source_id, rendered_text, score_detail, gate_result, created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?)",
+                    (self.role_id, 0, "chime_observe", "group", None, out,
+                     json.dumps(meta, ensure_ascii=False),
+                     json.dumps({"observe": True}, ensure_ascii=False), now))
+                self.conn.commit()
+            except Exception as e:  # noqa: BLE001  观察记录失败不影响聊天
+                print(f"[chime] observe 记录失败：{e!r}")
+            return out
         with self._lock:
             self._log_message("agent", out, {"chime": True, "review": gate["review"]}, now)
         return out
+
+    def _chime_finalize_with_search(self, lines: list, name_line: str,
+                                    draft: str, query: str, results: str) -> str:
+        """插嘴要推荐/给链接时：把真实搜索结果并进终稿（模型只负责措辞）。
+
+        链接必须原样保留：截断/缩写过的 URL 点不开，比不给更糟（2026-11-01
+        实测的"消息截断"就是这类残句）。搜不到对得上的就让模型只报型号。
+        """
+        nl = chr(10)
+        # 京东直达搜索链接：搜索结果里通常是测评/资讯页，未必有商品页（实测
+        # bigmodel 不给 item.jd.com）；这条按型号拼出来的搜索链接永远能点开，
+        # 且不是编造的商品 ID——对方要"京东链接"时用它兜底。
+        kw = re.sub(r"\s*京东\s*", " ", query).strip() or query
+        jd_link = shopping_link(kw)
+        prompt = (
+            f"你是群里的 {name_line}，一个有自己脾气和判断的群友。刚看到群里最近几条："
+            + nl + nl + nl.join(lines[-6:])
+            + nl + nl + "你刚才只来得及说了半句：" + draft
+            + nl + nl + f"系统已经替你搜了「{query}」，结果是：" + nl + results[:1500]
+            + nl + nl + f"京东直达搜索链接（可原样给出）：{jd_link}"
+            + nl + nl + "现在把答案说完，给最终要发的那句话：要推荐就给具体型号，"
+              "能贴真实链接就贴结果里的链接或上面那条京东搜索链接"
+              "（一字不改、不缩写、不截断），最多贴一条；对不上就只报型号，"
+              "别硬凑、别编商品页链接。别再说「我查下/稍等/马上给你」这类空话——"
+              "现在就说结论。口语、别@人、别解释你搜过；只输出这句话本身。")
+        try:
+            raw = (self.client.render_raw(prompt, 0, temperature=0.7,
+                                          max_tokens=400) or "").strip()
+        except Exception as e:  # noqa: BLE001  改写失败保留初稿
+            print(f"[chime] 搜索结果改写失败：{e!r}")
+            return ""
+        return strip_role_prefix(raw)
 
     def _summarize_dialogue(self, old_summary: str, batch: list) -> str:
         """旧摘要 + 新一批对话 -> 合并后的新摘要。返回空串视为失败。"""
@@ -1241,6 +1800,11 @@ class Agent:
         out = (self.client.render_raw(text, 0, temperature=0.2,
                                       max_tokens=min(16384, dcfg.summary_max_chars + 2000))
                or "").strip()
+        if not out:
+            return ""
+        if _summary_is_invalid(out, batch):
+            print("[dialogue] 摘要结果疑似拒答/语言不符，丢弃本次结果（不推进水位，下次重试）")
+            return ""
         if len(out) > dcfg.summary_max_chars:
             out = out[:dcfg.summary_max_chars]
         return out
@@ -1250,13 +1814,122 @@ class Agent:
     def on_user_message(self, text: str, now: float = None,
                         images: list = None, from_owner: bool = True,
                         speaker: str = "", speaker_role: str = "",
-                        speaker_wxid: str = "", addressee: str = "") -> dict:
+                        speaker_wxid: str = "", addressee: str = "",
+                        at_names: list = None, replay_message_id: int = None) -> dict:
         """处理一条用户消息。images: [{"bytes": …, "mime": …}] 或 REST 线格式
-        [{"b64": …, "mime": …}]（多用户桥直调本地 Agent 时是后者），可选。"""
+        [{"b64": …, "mime": …}]（多用户桥直调本地 Agent 时是后者），可选。
+        replay_message_id：桥重启后补处理已落库的消息，避免重复写一条 user。"""
         with self._lock:
             return self._on_user_message_locked(text, now, images, from_owner=from_owner,
                                                 speaker=speaker, speaker_role=speaker_role,
-                                                speaker_wxid=speaker_wxid, addressee=addressee)
+                                                speaker_wxid=speaker_wxid, addressee=addressee,
+                                                at_names=at_names,
+                                                replay_message_id=replay_message_id)
+
+    def on_task_result(self, info: dict, now: float = None) -> dict:
+        """后台任务完成后的第二次渲染：用当前人格把结果讲给用户。
+
+        和 on_user_message 共用锁，避免结果插进正在进行的回复；不写 user 消息，
+        只写一条 agent 消息，所以不会污染“对方刚说了什么”的对话结构。
+        """
+        with self._lock:
+            return self._on_task_result_locked(info or {}, now)
+
+    def _on_task_result_locked(self, info: dict, now: float = None) -> dict:
+        now = time.time() if now is None else now
+        row = self._evolve(self.get_row(now), now)
+        result = dict(info.get("result") or {})
+        action = str(info.get("action") or "")
+        task = {}
+        task_id = str(info.get("task_id") or "")
+        if task_id:
+            try:
+                task = self.hands.tasks.get(task_id)
+            except Exception as e:  # noqa: BLE001  任务读不到不影响结果投递
+                print(f"[task-result] 读取任务失败：{e!r}")
+        params = {}
+        try:
+            params = json.loads(task.get("params") or "{}")
+        except Exception:  # noqa: BLE001
+            params = {}
+        request = str(params.get("_request") or "").strip()
+        summary = str(result.get("summary") or "")
+        ok = bool(result.get("ok"))
+        task_result = {"action": action, "ok": ok, "summary": summary,
+                       "error": result.get("error") or "", "request": request}
+        dialogue = self.recent_messages(self.config.dialogue.window)
+        early_summary = self._dialogue_summary() or None
+
+        def _render_result(correction: str = None):
+            text, prompt, seed = self._render(
+                row, now, "task_result", intent="respond", source=None,
+                state_vector=row["state_vector"],
+                relation_state=row["relation_state"],
+                memories=[], open_intents=self.memory.open_intents(self.role_id),
+                permission_level=self._permission_level(),
+                last_active_effect=row.get("last_active_effect", "尚无记录"),
+                recent_user_message=request or None, recent_dialogue=dialogue,
+                hand_result=None, early_summary=early_summary,
+                capability_recall=int(row.get("cap_fail", 0)) > 0,
+                needs_detail=True, task_result=task_result,
+                style_correction=correction)
+            self._record_usage("task_result")
+            return text, prompt, seed
+
+        text, prompt, seed = _render_result()
+        if not str(text or "").strip():
+            self.save_row(row, now)
+            return {"reply": "", "meta": {"task_result": task_result}}
+        gate = self._review_gate(
+            text, "task_result", now, row,
+            {"user_message": request, "needs_detail": True,
+             "recent": [(d.get("content") if isinstance(d, dict) else str(d))
+                        for d in (dialogue or [])][-4:]},
+            rewrite=lambda correction: _render_result(correction)[0])
+        text = gate["text"]
+        cap_hit = any(i in ("capability_denial", "ai_self") for i in gate["seen"])
+        if cap_hit:
+            row["cap_fail"] = int(row.get("cap_fail", 0)) + 1
+        else:
+            row["cap_fail"] = max(0, int(row.get("cap_fail", 0)) - 1)
+        text = strip_media_markers(strip_role_prefix(text))
+        if not str(text or "").strip():
+            self.save_row(row, now)
+            return {"reply": "", "meta": {"task_result": task_result,
+                                          "review": gate["review"]}}
+        msg_id = self._log_message(
+            "agent", text,
+            {"task_result": {**task_result, "task_id": task_id},
+             "review": gate["review"], "seed": seed,
+             "prompt_tokens": estimate_tokens(str(prompt))}, now)
+        self.save_row(row, now)
+        return {"reply": text, "message_id": msg_id,
+                "meta": {"task_result": task_result, "review": gate["review"]}}
+
+    def _verify_drawn_image(self, prompt: str, path: str):
+        """画完看一眼：图跟要求对不上就不发。上游（CogView）遇到版权角色/真人/
+        品牌不报错，而是静默换一张无关的图返回（2026-10-30 实测：提示词「奶龙」
+        回来一张餐馆照片）。视觉端不可用或答非所问一律放行——自检只做减法。"""
+        vision = getattr(self.client, "render_image", None)
+        if vision is None or not os.path.isfile(str(path)):
+            return None
+        try:
+            with open(path, "rb") as f:
+                raw = f.read(8_000_000)
+            ask = ("这张图是否就是下面的描述？只回答「是」或「否」，不要解释。描述："
+                   + str(prompt)[:120])
+            mime = "image/png" if str(path).lower().endswith(".png") else "image/jpeg"
+            d = (vision(ask, raw, mime, max_tokens=8) or "").strip()
+            self._record_usage("vision")
+        except Exception as e:  # noqa: BLE001  自检失败不挡发图
+            print(f"[hands] 出图自检跳过：{e!r}")
+            return None
+        head = d[:8]
+        if "否" in head or "不是" in head or "不符" in head:
+            return False
+        if "是" in head:
+            return True
+        return None
 
     def _describe_images(self, images: list, now: float, row: dict) -> list:
         """视觉预描述：每张图 -> 一段文字，注入主链路（感知/记忆/渲染统一看到）。"""
@@ -1278,13 +1951,30 @@ class Agent:
             if len(raw) > 4_000_000:
                 descs.append("（图片过大，未查看）")
                 continue
+            # 动图（表情包多帧采样 / 直发 GIF）：一张图，不是多张图
+            frames = []
+            if im.get("frames"):
+                import base64 as _b64
+                for fr in im["frames"][:3]:
+                    try:
+                        frames.append((_b64.b64decode(str(fr)), "image/jpeg"))
+                    except (ValueError, TypeError):
+                        pass
+            animated = bool(im.get("animated")) or frames or raw[:3] == b"GIF"
             if vision is None:  # mock 等离线渲染端
-                descs.append("（图片，当前渲染端不支持看图）")
+                descs.append("（动图表情包，当前渲染端不支持看图）" if animated
+                             else "（图片，当前渲染端不支持看图）")
                 continue
+            if animated:
+                ask = ("对方发的是一个 GIF 动图表情包，附带它的采样帧（首/中/尾）——"
+                       "都属于同一张动图，不是多张图。一两句话描述画面和动作。")
+            else:
+                ask = "用一两句话描述这张图片的关键内容（人物/物体/场景/文字）。"
             try:
-                d = vision("用一两句话描述这张图片的关键内容（人物/物体/场景/文字）。",
-                           raw, im.get("mime") or "image/jpeg",
-                           seed=self._seed(now, "vision", row) % (2 ** 31), max_tokens=16384)
+                kwargs = {"frames": frames} if frames else {}
+                d = vision(ask, raw, im.get("mime") or "image/jpeg",
+                           seed=self._seed(now, "vision", row) % (2 ** 31),
+                           max_tokens=16384, **kwargs)
                 self._record_usage("vision")
                 if not (d or "").strip():
                     # 有的对话模型收了图却回空串（deepseek 即如此）——明确降级，
@@ -1298,11 +1988,18 @@ class Agent:
     def _on_user_message_locked(self, text: str, now: float, images: list = None,
                                 from_owner: bool = True, speaker: str = "",
                                 speaker_role: str = "", speaker_wxid: str = "",
-                                addressee: str = "") -> dict:
+                                addressee: str = "", at_names: list = None,
+                                replay_message_id: int = None) -> dict:
         now = time.time() if now is None else now
+        turn_started = time.time()   # 真实耗时基准（轨迹/延迟统计用）
+        if not speaker and not getattr(self, "is_group", False) and not from_owner:
+            # 私聊对方：wxhook 有时不给名字，用会话显示名兜底——否则人物卡会被写成"你"
+            speaker = self.group_name or ""
+            speaker_role = speaker_role or "friend"
         self._turn_speaker = speaker
         self._turn_speaker_role = speaker_role
         self._turn_addressee = addressee
+        self._turn_at_names = list(at_names or [])
 
         row = self._evolve(self.get_row(now), now)
         row = self.engine.apply_event_impulse(row, "user_message")
@@ -1358,10 +2055,13 @@ class Agent:
             msg_meta["speaker_wxid"] = speaker_wxid
         if addressee:
             msg_meta["addressee"] = addressee
+        if at_names:
+            msg_meta["at_names"] = list(at_names)
         if img_meta:
             msg_meta["images"] = img_meta
-        msg_id = self._log_message("user", text, msg_meta, now, speaker=speaker or "你",
-                                  speaker_role=speaker_role or ("owner" if from_owner else "member"))
+        msg_id = replay_message_id or self._log_message(
+            "user", text, msg_meta, now, speaker=speaker or "你",
+            speaker_role=speaker_role or ("owner" if from_owner else "member"))
         # 人物卡：先落身份/关系，再写记忆（记忆带 person_id/scope）
         person_id = None
         person_card = None
@@ -1399,13 +2099,24 @@ class Agent:
         # 更早的历史由滚动摘要承载（maybe_compress_dialogue 后台折叠）
         early_summary = self._dialogue_summary() or None
         dialogue = self.recent_messages(self.config.dialogue.window, before_id=msg_id)
-        old_dialogue = self._old_dialogue_hits(text, dialogue, now,
-                                               exclude_id=msg_id) or None
+        old_dialogue = self._recall_messages(text, dialogue, now,
+                                             exclude_id=msg_id) or None
         # 拟人思考路径：感知层想清楚"说什么/怎么说/什么情绪"，渲染层照着说
         reply_plan = None
         if perc and perc.get("reply_plan"):
             reply_plan = dict(perc["reply_plan"])
             reply_plan["对方此刻情绪"] = perc.get("emotion") or "平静"
+        # 长度决策（模型判断而非出口死规则）：提问/求助/分享/提出计划 = 该详细
+        # 就详细；闲聊/情绪安抚 = 短说。审核 too_long 与渲染指令共用这一位。
+        detail_mode = perception_mod.needs_detail(perc)
+        # 续讲请求（"继续吧/还有呢/接着讲"）= 用户明确要内容：该详细。
+        # 感知对这类短接话常判成"闲聊"，不补这一位会被 36 字兜底砍掉
+        # （2026-10-29 实测：'继续吧'→只回了半句预告，内容没了）
+        _cont_txt = str(text or "").strip()
+        if len(_cont_txt) <= 15 and re.search(
+                r"继续|接着|还有|往下|展开|详细|讲完|说完|一口气|分点|再来|多讲|多说"
+                r"|从头|捋完|都讲|都写", _cont_txt):
+            detail_mode = True
 
         # 手部：感知提议 -> 引擎校验执行（LLM 永远不直接执行任何东西）
         hand_result = None
@@ -1414,6 +2125,15 @@ class Agent:
             if isinstance(actions, dict):
                 actions = [actions]
             summaries, all_ok, names, images_out = [], True, [], []
+            # 这一轮是谁在让我做事：任务归属与权限硬闸（群友不能借她的手跑 shell）。
+            self.hands.turn_context = {
+                "requester": speaker_wxid or "",
+                "speaker": speaker or "",
+                "role": speaker_role or ("owner" if from_owner else "member"),
+                "is_owner": bool(from_owner),
+                "room": self.group_room or "",
+                "text": text or "",
+            }
             for ha in actions[:3]:
                 if self._echo_redraw(ha, text):
                     continue   # 感知层把无关纠正误读成"重画"：跳过，不发重复图
@@ -1447,8 +2167,11 @@ class Agent:
             self.engine.attractor, ctx, recent_intent_types=set(self._recent_proactive()))
 
         # 主动附加层：只有 L2+ 才有资格搭车（L1 微反应属于调度路径）
+        # 这一轮已经执行了手部动作（点歌/提醒/画图等）时不再叠加：
+        # 否则会出现"主动提醒 + 正常回复"两条都在说同一件事的重复。
         addon, addon_meta = None, None
-        l2plus = [] if self._cost_degraded() else [c for c in candidates if c.level >= 2]
+        l2plus = [] if (self._cost_degraded() or hand_result is not None) else [
+            c for c in candidates if c.level >= 2]
         best = motivation.best_candidate(l2plus)
         if best is not None:
             decision = self.gate.decide(best, score, row, now, source_exists=self._source_exists)
@@ -1473,7 +2196,8 @@ class Agent:
                                               decision.to_log(), now)
                     self._log_message("agent", addon_text,
                                       {"proactive": {"intent": best.name, "level": best.level,
-                                                     "log_id": log_id}}, now)
+                                                     "log_id": log_id}}, now,
+                                      created_at=now + (time.time() - turn_started))
                     row = register_active(row, best.level, best.name, now)
                     row["last_action"] = best.name
                     row = self.engine.apply_event_impulse(row, "agent_proactive_sent")
@@ -1482,10 +2206,13 @@ class Agent:
         # 状态驱动语言（梯队1-1）：极端状态产出可机检硬约束，渲染后闭环校验
         style_audit = {"constraints": [], "violations": [], "retried": False,
                        "mechanical": False, "passed": True,
+                       "loose": bool(getattr(self, "loose_mode", False)),
                        "state": {k: round(row["state_vector"][k], 3)
                                  for k in ("energy", "valence", "arousal")}}
         style_constraints = []
-        if self.config.state_style.enabled:
+        if self.config.state_style.enabled and not getattr(self, "loose_mode", False):
+            # loose 模式不叠加状态语言硬约束：极端状态仍影响语气，但不许把
+            # "只能短句/不许问句"这类机械约束再压到熟人局上。
             style_constraints = state_style_mod.derive(row["state_vector"],
                                             self.persona.baseline_state)
             style_constraints += style_ctrl.constraints(
@@ -1503,8 +2230,20 @@ class Agent:
             old_dialogue=old_dialogue, reply_plan=reply_plan,
             mood_event=row.get("last_mood_event"),
             capability_recall=int(row.get("cap_fail", 0)) > 0,
+            needs_detail=detail_mode,
             )
         self._record_usage("respond")
+        # [skip] 是内部控制标记（"这句不是跟我说的，别发"）。模型偶尔写成
+        # "[skip] 正文…"（标记+内容）——只认完全相等会把标记原样发到微信
+        # （2026-10-29 真实泄露病例）。前缀标记剥掉：只剩标记=跳过，
+        # 带正文=发剥掉标记后的正文。
+        _skip_m = re.match(r"^\[(?:skip|跳过)\]\s*", str(reply or "").strip(), re.I)
+        if _skip_m:
+            reply = str(reply or "").strip()[_skip_m.end():].strip()
+            if not reply:
+                # 模型判断"这句不是跟我说的"：不发、不落库
+                return {"reply": "", "addon": None, "addon_meta": None,
+                        "meta": {"skipped": True, "perception": perc}}
         if style_constraints:
             style_audit["violations"] = state_style_mod.check(reply, style_constraints)
             if style_audit["violations"]:
@@ -1522,6 +2261,7 @@ class Agent:
                     early_summary=early_summary, old_dialogue=old_dialogue,
                     reply_plan=reply_plan, mood_event=row.get("last_mood_event"),
                     capability_recall=int(row.get("cap_fail", 0)) > 0,
+                    needs_detail=detail_mode,
                     )
                 self._record_usage("respond")
                 style_audit["retried"] = True
@@ -1545,13 +2285,14 @@ class Agent:
                 style_correction=correction,
                 early_summary=early_summary, old_dialogue=old_dialogue,
                 reply_plan=reply_plan, mood_event=row.get("last_mood_event"),
-                capability_recall=True)
+                capability_recall=True, needs_detail=detail_mode)
             self._record_usage("respond")
             return text4
 
         gate = self._review_gate(
             reply, "respond", now, row,
             {"user_message": text,
+             "needs_detail": detail_mode,
              "recent": [(d.get("content") if isinstance(d, dict) else str(d))
                         for d in (dialogue or [])][-4:]},
             rewrite=_rewrite)
@@ -1572,13 +2313,15 @@ class Agent:
         # 内心立场存档：下一条用户消息来时做共鸣/冲撞对比（拟人反馈回路）
         my_stance = {"mood": (reply_plan or {}).get("mood") or "平静",
                      "valence": round(float(row["state_vector"]["valence"]), 3)}
+        turn_ms = int(round(max(0.0, time.time() - turn_started) * 1000))
         reply_msg_id = self._log_message("agent", reply, {
             "prompt_tokens": estimate_tokens(str(prompt)),
             "memory_tokens": mem_tokens,
             "memories": len(prompt["相关记忆"]),
             "identity_len": len(prompt["身份摘要"]),
             "seed": seed, "addon": addon_meta, "my_stance": my_stance,
-            "style": style_audit}, now)
+            "style": style_audit, "turn_ms": turn_ms, "reply_to": msg_id}, now,
+            created_at=now + turn_ms / 1000.0)
         self.save_row(row, now)
         # mem0 攒批提炼：消息处理完顺带看一眼是否到提炼水位（内部自带节流/失败保险）
         if hasattr(self.memory, "maybe_extract"):
@@ -1608,6 +2351,7 @@ class Agent:
         """
         ctx = dict(context or {})
         ctx["purpose"] = purpose
+        ctx.setdefault("loose", bool(getattr(self, "loose_mode", False)))
         if row is not None:
             ctx.setdefault("group", bool(getattr(self, "is_group", False)))
         started = time.time()
@@ -1617,7 +2361,8 @@ class Agent:
         llm_failed = bool(res.get("llm_failed"))
         final, retried = text, False
         # 1) AI 腔这类确定性病灶：机械修正，零成本
-        tic = [i for i in seen if i in ("tic_period", "tic_opener", "tic_twoline")]
+        tic = [i for i in seen if i in ("tic_period", "tic_opener", "tic_twoline",
+                                        "emoji_spam", "flat_question", "control_leak")]
         if seen and len(tic) == len(seen):
             final = reviewer_mod.mechanical_fix(text, tic)
             res2 = self.reviewer.review(final, ctx, allow_llm=False)
@@ -1639,6 +2384,18 @@ class Agent:
                 retried = True
                 if res3["ok"] or len(res3["issues"]) < len(res["issues"]):
                     final, res = new_text, res3
+        # 最后兜底：重写后还是超长 -> 截到 36 字内（人格卡上限"最多两句"
+        # 对齐；18 字太严会砍掉包袱半句，留下闹情绪的残句）。
+        # 切在边界（换行/标点）上，无边界时显式省略号——绝不无声腰斩（详见
+        # state_style.toolong_backstop 的病例注释）。
+        # needs_detail 的回合不截：用户要的就是内容，截成残句比长更糟
+        # （2026-10-30 实测 850 字故事被砍成 9 字"那我一口气给你讲完"）。
+        # 型号清单/链接这类干货也不截：chime 路径没有"打回重写"，一刀切会把
+        # "小米4 Pro、米家全效、352 X86C"切成"…型号：小米4"（2026-11-01 实测）。
+        if ("too_long" in (res.get("issues") or []) and len(final) > 36
+                and not ctx.get("needs_detail")
+                and not reviewer_mod.is_substantive(final)):
+            final = state_style_mod.toolong_backstop(final, limit=36)
         waited = time.time() - started
         blocked = any(i in ("capability_denial", "ai_self", "empty")
                       for i in res.get("issues") or [])
@@ -1668,35 +2425,106 @@ class Agent:
         except Exception as e:  # noqa: BLE001  留痕失败不影响发送
             print(f"[review] 审稿日志写入失败：{e!r}")
 
-    def _review_stats(self) -> dict:
-        """控制台用：审核 Agent 的开关、配额与最近审稿记录。"""
-        since = time.time() - 86400
-        rows = self.conn.execute(
+    @staticmethod
+    def _review_summarize(conn, since: float, limit: int = 12,
+                          day_start: float = None) -> dict:
+        """单个库的审核统计（主库/某个群/某个私聊用户各一份）。"""
+        rows = conn.execute(
             "SELECT purpose, COUNT(*) c, SUM(retried) r, SUM(llm_used) l,"
             " SUM(llm_failed) f FROM review_logs"
-            " WHERE role_id=? AND created_at>=? GROUP BY purpose",
-            (self.role_id, since)).fetchall()
+            " WHERE created_at>=? GROUP BY purpose", (since,)).fetchall()
         by_purpose = {r["purpose"]: {"count": r["c"], "retried": r["r"] or 0,
                                      "llm_used": r["l"] or 0,
                                      "llm_failed": r["f"] or 0} for r in rows}
-        flagged = self.conn.execute(
-            "SELECT COUNT(*) c FROM review_logs WHERE role_id=? AND created_at>=?"
-            " AND issues<>'[]'", (self.role_id, since)).fetchone()["c"]
-        recent = [dict(r) for r in self.conn.execute(
+        flagged = conn.execute(
+            "SELECT COUNT(*) c FROM review_logs WHERE created_at>=?"
+            " AND issues<>'[]'", (since,)).fetchone()["c"]
+        out_msgs = conn.execute(
+            "SELECT COUNT(*) c FROM messages WHERE sender='agent' AND created_at>=?",
+            (since,)).fetchone()["c"]
+        llm_today = conn.execute(
+            "SELECT COUNT(*) c FROM review_logs WHERE llm_used=1 AND created_at>=?",
+            (day_start if day_start else since,)).fetchone()["c"]
+        recent = [dict(r) for r in conn.execute(
             "SELECT id,purpose,mode,issues,correction,original,final,retried,"
             "llm_used,llm_failed,latency_ms,created_at FROM review_logs"
-            " WHERE role_id=? ORDER BY id DESC LIMIT 12", (self.role_id,)).fetchall()]
+            " WHERE created_at>=? ORDER BY id DESC LIMIT ?", (since, limit)).fetchall()]
         for r in recent:
             try:
                 r["issues"] = json.loads(r["issues"] or "[]")
             except json.JSONDecodeError:
                 r["issues"] = []
+        return {"total": sum(v["count"] for v in by_purpose.values()),
+                "flagged": flagged, "out_messages": out_msgs,
+                "llm_today": llm_today,
+                "by_purpose": by_purpose, "recent": recent}
+
+    def _review_stats(self) -> dict:
+        """控制台用：审核 Agent 的开关、配额、各会话覆盖率与最近审稿记录。
+
+        注意：每个会话（私聊/各群/其他用户）各自一个库，统计必须汇总——
+        只看主库会以为"几乎没启用"（实测主库 9 次、全量 125 次）。
+        """
+        since = time.time() - 86400
+        _lt = time.localtime()
+        day_start = time.mktime((_lt.tm_year, _lt.tm_mon, _lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        total = flagged = out_msgs = llm_today = 0
+        by_purpose = {}
+        recent = []
+
+        def _merge(summary: dict, label: str, kind: str, sid: str):
+            nonlocal total, flagged, out_msgs, llm_today
+            total += summary["total"]
+            flagged += summary["flagged"]
+            out_msgs += summary["out_messages"]
+            llm_today += summary.get("llm_today", 0)
+            for k, v in (summary.get("by_purpose") or {}).items():
+                cur = by_purpose.setdefault(k, {"count": 0, "retried": 0,
+                                               "llm_used": 0, "llm_failed": 0})
+                for kk in cur:
+                    cur[kk] += v.get(kk, 0)
+            for r in summary.get("recent") or []:
+                r["session"] = label
+                recent.append(r)
+            return {"id": sid, "label": label, "kind": kind,
+                    "total": summary["total"], "flagged": summary["flagged"],
+                    "out_messages": summary["out_messages"],
+                    "coverage": (round(summary["total"] / summary["out_messages"], 3)
+                                 if summary["out_messages"] else None)}
+
+        sessions = [_merge(self._review_summarize(self.conn, since, limit=6,
+                                                   day_start=day_start),
+                           "私聊", "private", "private")]
+        for g in self._session_dbs():
+            conn = g["conn"]
+            try:
+                s = self._review_summarize(conn, since, limit=3,
+                                           day_start=day_start)
+            except Exception:  # noqa: BLE001  单个会话库读失败不影响统计
+                s = {"total": 0, "flagged": 0, "out_messages": 0,
+                     "by_purpose": {}, "recent": []}
+            finally:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            if g["kind"] == "group":
+                label = g["label"] or ("群 " + g["room"].split("@")[0][-6:])
+            else:
+                label = g["label"] or g["id"][-6:]
+            sessions.append(_merge(s, label, g["kind"], g["id"]))
+
+        recent.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
         return {"mode": self.config.reviewer.mode,
                 "llm_purposes": list(self.config.reviewer.llm_purposes or []),
-                "calls_today": int(getattr(self.reviewer, "calls_today", 0) or 0),
+                "calls_today": llm_today,   # 按日志算（跨会话、跨进程重启）
                 "max_per_day": int(self.config.reviewer.max_llm_per_day or 0),
-                "total_24h": sum(v["count"] for v in by_purpose.values()),
-                "flagged_24h": flagged, "by_purpose": by_purpose, "recent": recent}
+                "total_24h": total, "flagged_24h": flagged,
+                "out_messages_24h": out_msgs,
+                "coverage": (round(total / out_msgs, 3) if out_msgs else None),
+                "llm_calls_process": int(getattr(self.reviewer, "calls_today", 0) or 0),
+                "sessions": sessions, "by_purpose": by_purpose,
+                "recent": recent[:12]}
 
     def _permission_level(self) -> str:
         enabled = get_setting(self.conn, "proactive_enabled", True)
@@ -1738,6 +2566,8 @@ class Agent:
                 "growth": {
                     "attractor_drift": get_setting(self.conn, "attractor_drift", {}) or {},
                     "growth_rules": get_setting(self.conn, "growth_rules", []) or [],
+                    "state": self._growth_state(),
+                    "profile": self._growth_profile(),
                     "last_reflection_ts": get_setting(self.conn, "last_reflection_ts", None),
                     "reflection_count": self.conn.execute(
                         "SELECT COUNT(*) c FROM reflections WHERE role_id=?",
@@ -1778,6 +2608,62 @@ class Agent:
                     pass
         return out
 
+    def _console_people(self, groups: list = None) -> list:
+        """所有会话的人物卡：主库 + 每个群/私聊用户库各有一张 persons 表。
+
+        同 wxid 跨会话合并成一张卡（关系数值取最熟的那份），sessions 记录
+        这张卡出现在哪些会话里——人物卡页不该只看到主库那一个人。
+        """
+        merged = {}
+
+        def add(cards: list, sid: str, label: str, kind: str):
+            for c in cards or []:
+                key = str(c.get("wxid") or c.get("name") or c.get("person_id"))
+                entry = merged.get(key)
+                if entry is None:
+                    entry = dict(c)
+                    entry["sessions"] = []
+                    entry["session_ids"] = []
+                    entry["primary"] = label
+                    merged[key] = entry
+                elif (c.get("familiarity") or 0) > (entry.get("familiarity") or 0):
+                    keep = {k: entry.get(k) for k in ("sessions", "session_ids", "primary")}
+                    entry.update(c)
+                    entry.update(keep)
+                    entry["primary"] = label
+                if label and label not in entry["sessions"]:
+                    entry["sessions"].append(label)
+                if sid not in entry["session_ids"]:
+                    entry["session_ids"].append(sid)
+                # 私聊库里对方常被存成"你"/空名：用会话显示名兜底
+                if kind == "private" and str(entry.get("name") or "") in ("", "你"):
+                    entry["name"] = label or entry.get("name") or ""
+
+        add(self.persons.list_cards(100), "private", "私聊", "private")
+        for g in (groups or []):
+            add(g.get("people") or [], g.get("room") or g.get("label") or "",
+                g.get("label") or g.get("room") or "", "group")
+        for s in self._session_dbs():
+            if s["kind"] == "group":   # 群卡已经在 groups 里，别重复开库
+                try:
+                    s["conn"].close()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            try:
+                add(PersonStore(s["conn"], self.role_id, self.persona).list_cards(100),
+                    s["id"], s["label"] or s["id"], "private")
+            except Exception:  # noqa: BLE001  单个库读失败不影响其他卡
+                continue
+            finally:
+                try:
+                    s["conn"].close()
+                except Exception:  # noqa: BLE001
+                    pass
+        return sorted(merged.values(),
+                      key=lambda c: (c.get("kind") != "creator",
+                                     -(c.get("familiarity") or 0)))
+
     def _trajectory_items(self, conn, limit: int = 80) -> list:
         """单个库（主库或某个群的库）的轨迹条目：消息 + 工具调用，按时间排。
 
@@ -1798,6 +2684,7 @@ class Agent:
             " WHERE role_id=? ORDER BY id DESC LIMIT 200", (self.role_id,)).fetchall()]
         items = []
         pending_input = None
+        perceptions = {}   # 消息 id -> 感知结果；回复带 reply_to 时按它取，别串到别人消息上
         for r in rows:
             try:
                 meta = json.loads(r["meta"] or "{}")
@@ -1809,12 +2696,21 @@ class Agent:
                     "trace": {}}
             if r["sender"] == "user":
                 pending_input = meta.get("perception")
+                perceptions[int(r["id"])] = pending_input
                 item["trace"] = {"perception": pending_input,
                                  "images": meta.get("images") or [],
                                  "addressee": meta.get("addressee"),
                                  "overheard": bool(meta.get("overheard"))}
             else:
-                trace = {"input": pending_input,
+                reply_to = meta.get("reply_to")
+                trace_input = pending_input
+                if reply_to is not None:
+                    try:
+                        trace_input = perceptions.get(int(reply_to), pending_input)
+                    except (TypeError, ValueError):
+                        trace_input = pending_input
+                trace = {"input": trace_input,
+                         "reply_to": reply_to,
                          "memory_tokens": meta.get("memory_tokens"),
                          "memories": meta.get("memories"),
                          "prompt_tokens": meta.get("prompt_tokens"),
@@ -1823,6 +2719,7 @@ class Agent:
                          "addon": meta.get("addon"),
                          "proactive": meta.get("proactive"),
                          "review": meta.get("review"),
+                         "turn_ms": meta.get("turn_ms"),
                          "chime": bool(meta.get("chime"))}
                 log_id = ((meta.get("proactive") or {}).get("log_id")
                           or (meta.get("addon") or {}).get("log_id"))
@@ -1880,44 +2777,194 @@ class Agent:
             except Exception:  # noqa: BLE001  单个库打不开不影响其他轴
                 continue
         return out
-    def trajectory(self, limit: int = 80) -> dict:
-        """会话轨迹：按会话分组的多条时间轴（私聊一条，每个群各一条）。
+    def _session_counts(self, conn) -> dict:
+        """会话的条目总量与最近时间（消息 + 工具调用），供控制台标"共多少条/是否截断"。"""
+        msg = conn.execute(
+            "SELECT COUNT(*) c, MAX(created_at) t FROM messages WHERE role_id=?",
+            (self.role_id,)).fetchone()
+        hand = conn.execute(
+            "SELECT COUNT(*) c, MAX(created_at) t FROM hands_log WHERE role_id=?",
+            (self.role_id,)).fetchone()
+        return {"total": int(msg["c"] or 0) + int(hand["c"] or 0),
+                "last": max(msg["t"] or 0, hand["t"] or 0)}
+
+    def _pack_session(self, sid: str, label: str, kind: str, room: str,
+                      conn, limit: int, want_items: bool) -> dict:
+        """一个会话轴的打包结果；want_items=False 时只回元数据（切会话时省流量）。"""
+        counts = self._session_counts(conn)
+        items = self._trajectory_items(conn, limit) if want_items else []
+        return {"id": sid, "label": label, "kind": kind, "room": room,
+                "items": items, "count": len(items), "total": counts["total"],
+                "last": counts["last"] or (items[-1]["created_at"] if items else 0),
+                "truncated": bool(want_items and counts["total"] > len(items))}
+
+    def trajectory(self, limit: int = 80, session: str = None,
+                   meta: bool = False) -> dict:
+        """会话轨迹：按会话分组的多条时间轴（私聊一条，每个群/私聊用户各一条）。
 
         每条轴内含 消息/工具 条目，带绝对时间戳，前端按真实时间轴摆位。
+        session= 只取那一条会话的条目（其余只回元数据）；meta=True 只回会话清单。
         """
         with self._lock:
-            limit = max(10, min(int(limit), 300))
-            main_items = self._trajectory_items(self.conn, limit)
-            sessions = [{"id": "private", "label": "私聊", "kind": "private",
-                         "room": "", "items": main_items,
-                         "last": main_items[-1]["created_at"] if main_items else 0,
-                         "count": len(main_items)}]
+            limit = max(10, min(int(limit), 500))
+
+            def want(sid: str) -> bool:
+                return (not meta) and (session is None or session == sid)
+
+            sessions = [self._pack_session("private", "私聊", "private", "",
+                                           self.conn, limit, want("private"))]
             for g in self._session_dbs():
+                fallback = ("群 " + g["room"].split("@")[0][-6:]) if g["kind"] == "group" \
+                    else ("用户 " + g["id"][-6:])
                 try:
-                    items = self._trajectory_items(g["conn"], limit)
+                    sessions.append(self._pack_session(
+                        g["id"], g["label"] or fallback, g["kind"], g["room"],
+                        g["conn"], limit, want(g["id"])))
                 except Exception:  # noqa: BLE001  单个库读失败=空轴
-                    items = []
+                    sessions.append({"id": g["id"], "label": g["label"] or fallback,
+                                     "kind": g["kind"], "room": g["room"],
+                                     "items": [], "count": 0, "total": 0,
+                                     "last": 0, "truncated": False})
                 finally:
                     try:
                         g["conn"].close()
                     except Exception:  # noqa: BLE001
                         pass
+            sessions[1:] = sorted(sessions[1:], key=lambda s: -(s["last"] or 0))
+            return {"sessions": sessions, "items": sessions[0]["items"],
+                    "server_time": time.time()}
+
+    def _prompt_overlay(self, conn, sid: str, kind: str, label: str,
+                        full: bool = False) -> dict:
+        """一个会话在提示词上的叠加项：名字、风格覆盖、成长规则、摘要、记忆量、最近快照。"""
+        def setting(key, default=None):
+            try:
+                return get_setting(conn, key, default)
+            except Exception:  # noqa: BLE001
+                return default
+
+        def count(table: str) -> int:
+            try:
+                return int(conn.execute(
+                    "SELECT COUNT(*) c FROM " + table + " WHERE role_id=?",
+                    (self.role_id,)).fetchone()["c"] or 0)
+            except Exception:  # noqa: BLE001
+                return 0
+
+        ov = setting("config_overrides", {}) or {}
+        summary = setting("conv_summary:" + self.role_id, {}) or {}
+        lp = setting("last_prompt", None) or None
+        last = None
+        if lp:
+            last = {"ts": lp.get("ts"), "purpose": lp.get("purpose"),
+                    "chars": lp.get("chars")}
+            if full:
+                last["text"] = lp.get("text")
+                last["sections"] = lp.get("sections")
+        return {
+            "id": sid, "label": label, "kind": kind,
+            "name": str(setting("group_name" if kind == "group" else "display_name",
+                                "") or ""),
+            "persona_style": setting("persona_style", {}) or {},
+            "growth_rules": setting("growth_rules", []) or [],
+            "attractor_drift": setting("attractor_drift", {}) or {},
+            "gate_shift_L2": setting("gate_shift_L2", 0) or 0,
+            "persona_overrides": (ov.get("persona") or {}),
+            "config_overrides": ov,
+            "summary": str(summary.get("summary") or ""),
+            "memories": count("memories"), "messages": count("messages"),
+            "people": count("persons"),
+            "last_prompt": last,
+        }
+
+    def prompt_view(self, session: str = None) -> dict:
+        """提示词查看：基线设定（人格/风格/边界/能力）+ 每个会话的叠加项。
+
+        session= 时把那条会话最近一次真正发出去的提示词全文（sections + text）
+        一起带回来；其它会话只回快照元信息（时间/用途/字数），省流量。
+        """
+        with self._lock:
+            base = {
+                "role_id": self.role_id,
+                "identity_summary": self.persona.identity_summary,
+                "core_invariants": list(self.persona.core_invariants),
+                "style": dict(self.persona.style or {}),
+                "boundaries": list(self.persona.boundaries or []),
+                "baseline_state": dict(self.persona.baseline_state or {}),
+                "attractor": [{"state_name": e.state_name, "center": e.center,
+                               "tolerance": e.tolerance, "weight": e.weight}
+                              for e in self.persona.attractor],
+                "overrides": {},
+                "capabilities": self.builder._capabilities(),
+                "creator": dict(getattr(self.persona, "creator", {}) or {}),
+                "switches": {
+                    "state_style": bool(self.config.state_style.enabled),
+                    "reviewer_mode": self.config.reviewer.mode,
+                    "memory_provider": self.config.memory.provider,
+                    "dialogue_window": self.config.dialogue.window,
+                    "retrieval_top_k": self.config.memory.retrieval_top_k,
+                },
+            }
+            try:
+                with open(persona_overrides_path(os.path.join(self.config_dir, "persona.yaml")),
+                          "r", encoding="utf-8") as f:
+                    ov_data = json.load(f) or {}
+                if isinstance(ov_data, dict):
+                    base["overrides"] = ov_data
+            except Exception:  # noqa: BLE001  没有覆盖文件=出厂值
+                base["overrides"] = {}
+            # 初始基线提示词：不接状态/记忆/对话，只看"开箱时模型收到的那套设定"。
+            # 群聊会话会在它之上加【群聊规则】【群聊身份】（看该会话的实发快照）。
+            try:
+                neutral = self.engine.new_row(time.time())
+                bp = self.builder.build(
+                    intent="respond", source=None,
+                    state_vector=dict(self.persona.baseline_state),
+                    relation_state=neutral["relation_state"],
+                    memories=[], open_intents=[], permission_level=self._permission_level(),
+                    last_active_effect="尚无记录", recent_user_message=None,
+                    recent_dialogue=[], group_context=False,
+                    person_card=None, creator_card=None, now=time.time())
+                base["base_prompt"] = {"sections": bp,
+                                       "text": render_prompt_text(bp),
+                                       "chars": len(render_prompt_text(bp))}
+            except Exception as e:  # noqa: BLE001  预览失败不影响其它内容
+                base["base_prompt"] = {"error": repr(e)}
+            self_sid = self.group_room if getattr(self, "is_group", False) else "private"
+            self_kind = "group" if getattr(self, "is_group", False) else "private"
+            self_label = ((self.group_name or "群聊") if self_kind == "group" else "私聊")
+            sessions = [self._prompt_overlay(self.conn, self_sid, self_kind, self_label,
+                                             full=(session == self_sid))]
+            for g in self._session_dbs():
+                if os.path.abspath(g.get("db") or "") == os.path.abspath(self._db_path or ""):
+                    try:
+                        g["conn"].close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
                 fallback = ("群 " + g["room"].split("@")[0][-6:]) if g["kind"] == "group" \
                     else ("用户 " + g["id"][-6:])
-                sessions.append({"id": g["id"], "label": g["label"] or fallback,
-                                 "kind": g["kind"], "room": g["room"], "items": items,
-                                 "last": items[-1]["created_at"] if items else 0,
-                                 "count": len(items)})
-            sessions[1:] = sorted(sessions[1:], key=lambda s: -(s["last"] or 0))
-            return {"sessions": sessions, "items": main_items,
-                    "server_time": time.time()}
+                try:
+                    sessions.append(self._prompt_overlay(
+                        g["conn"], g["id"], g["kind"], g["label"] or fallback,
+                        full=(session == g["id"])))
+                except Exception:  # noqa: BLE001  单个库读失败也留个空位
+                    sessions.append({"id": g["id"], "label": g["label"] or fallback,
+                                     "kind": g["kind"], "last_prompt": None})
+                finally:
+                    try:
+                        g["conn"].close()
+                    except Exception:  # noqa: BLE001
+                        pass
+            return {"base": base, "sessions": sessions, "server_time": time.time()}
 
     def console_snapshot(self) -> dict:
         """后台控制台数据：参数、状态、人物卡、记忆、主动日志一次取全。"""
         with self._lock:
             now = time.time()
             status = self.status(now)
-            people = self.persons.list_cards(30) if hasattr(self, "persons") else []
+            groups = self._console_groups()
+            people = self._console_people(groups) if hasattr(self, "persons") else []
             mem_by_type = [dict(r) for r in self.conn.execute(
                 "SELECT type, COUNT(*) AS count FROM memories WHERE role_id=?"
                 " GROUP BY type", (self.role_id,)).fetchall()]
@@ -1942,9 +2989,78 @@ class Agent:
                            "by_type": mem_by_type, "recent": mem_recent},
                 "messages": msg_count,
                 "active_logs": logs,
-                "groups": self._console_groups(),
+                "groups": groups,
                 "review": self._review_stats(),
+                "hands": self._hands_snapshot(),
+                "growth": {
+                    "baseline": dict(self._base_centers),
+                    "events": [dict(r) for r in self.conn.execute(
+                        "SELECT id, kind, evidence, state_before, state_after,"
+                        " created_at FROM growth_events WHERE role_id=?"
+                        " ORDER BY id DESC LIMIT 120", (self.role_id,)).fetchall()],
+                },
             }
+
+    def _wechat_probe(self) -> dict:
+        """探测 wxhook 登录态（1.2s 超时 + 15s 缓存，别让控制台刷新被拖住）。
+
+        只能证明微信客户端已登录；桥是独立进程，在不在跑这里看不到。
+        """
+        w = self.config.wechat
+        if w.channel != "wxhook":
+            return {"up": None, "logged_in": None, "checked": 0}
+        now = time.time()
+        cached = getattr(self, "_wx_probe_cache", None)
+        if cached and now - cached[0] < 15:
+            return cached[1]
+        info = {"up": False, "logged_in": None, "checked": now}
+        try:
+            req = urllib.request.Request(
+                w.wxhook.base_url.rstrip("/") + "/QueryDB/status", method="GET")
+            with urllib.request.urlopen(req, timeout=1.2) as r:
+                out = json.loads(r.read().decode("utf-8", "replace") or "{}")
+            info = {"up": True, "logged_in": out.get("IsLogin") == 1, "checked": now}
+        except Exception:  # noqa: BLE001  hook 没起/超时都只是"离线"，不影响快照
+            pass
+        self._wx_probe_cache = (now, info)
+        return info
+
+    def _hands_snapshot(self) -> dict:
+        """手部/插件快照：注册动作、插件装载结果、调用统计、微信通道配置与登录态。
+
+        动作清单来自 Hands 注册表（内置与插件同一条路径）；调用次数与最近
+        使用时间来自 hands_log（插件动作经同一 execute 入口，天然计入）。
+        """
+        usage = {}
+        for r in self.conn.execute(
+                "SELECT action, COUNT(*) c, MAX(created_at) t FROM hands_log"
+                " WHERE role_id=? GROUP BY action", (self.role_id,)).fetchall():
+            usage[r["action"]] = {"calls": r["c"], "last": r["t"]}
+        actions = []
+        for a in self.hands.snapshot():
+            u = usage.get(a["name"], {})
+            actions.append({**a, "calls": u.get("calls", 0), "last": u.get("last")})
+        w = self.config.wechat
+        return {
+            "enabled": bool(self.config.hands.enabled),
+            "allow_shell": bool(self.config.hands.allow_shell),
+            "plugins_enabled": bool(self.config.hands.plugins_enabled),
+            "actions": actions,
+            "plugins": list(self.plugin_info or []),
+            "wechat": {
+                "channel": w.channel,
+                "groups_enabled": bool(w.groups_enabled),
+                "group_mention_only": bool(w.group_mention_only),
+                "enabled_chats": list(w.enabled_chats or []),
+                "base_url": w.wxhook.base_url,
+                "probe": self._wechat_probe(),
+            },
+            "voice": {
+                "asr_model": self.config.asr.model,
+                "reply": w.voice_reply,
+                "max_chars": w.voice_max_chars,
+            },
+        }
 
     def _usage_summary(self) -> dict:
         out = {}
@@ -1983,9 +3099,9 @@ class Agent:
 
     # ---------------- 主动路径：调度 ----------------
 
-    def evaluate_proactive(self, now: float = None) -> dict:
+    def evaluate_proactive(self, now: float = None, observe: bool = False) -> dict:
         with self._lock:
-            return self._evaluate_proactive_locked(now)
+            return self._evaluate_proactive_locked(now, observe=observe)
 
 
     def _fire_due_reminders(self, row: dict, now: float) -> list:
@@ -2032,7 +3148,7 @@ class Agent:
             self.save_row(row, now)
         return fired
 
-    def _evaluate_proactive_locked(self, now: float) -> dict:
+    def _evaluate_proactive_locked(self, now: float, observe: bool = False) -> dict:
         now = time.time() if now is None else now
         row = self._evolve(self.get_row(now), now)
         fired = self._fire_due_reminders(row, now)
@@ -2125,10 +3241,22 @@ class Agent:
             self.save_row(row, now)
             return {"sent": None, "reason": "reviewer blocked",
                     "review": gate["review"], "active_score": round(score, 4)}
-        log_id = self._log_active(best.level, best, text,
-                                  {"active_score": round(score, 4), "urges": urges,
-                                   "seed": seed, "review": gate["review"]},
-                                  decision.to_log(), now)
+        log_detail = {"active_score": round(score, 4), "urges": urges,
+                      "seed": seed, "review": gate["review"]}
+        gate_log = decision.to_log()
+        if observe:
+            log_detail["observe"] = True
+            gate_log = dict(gate_log or {})
+            gate_log["observe"] = True
+        log_id = self._log_active(best.level, best, text, log_detail, gate_log, now)
+        if observe:
+            # 观察模式：记录“本来会说什么”，但不写 messages、不施加“已主动”
+            # 情绪脉冲；仍登记冷却，避免同一素材每轮重复判。
+            row = register_active(row, best.level, best.name, now)
+            self.save_row(row, now)
+            return {"observed": {"text": text, "level": best.level,
+                                 "intent": best.name, "log_id": log_id},
+                    "gate": gate_log, "active_score": round(score, 4)}
         self._log_message("agent", text,
                           {"proactive": {"intent": best.name, "level": best.level,
                                          "log_id": log_id},
@@ -2349,6 +3477,31 @@ def cmd_uninstall(args):
     print("已移除：" + "、".join(removed) if removed else "没有已注册的自启项")
 
 
+def cmd_stickers(args):
+    """表情包库：sync 下载 / search 检索 / list 概况。"""
+    from . import stickers as sticker_mod
+    cfg = load_config(os.path.join(os.environ.get("AGENT_CONFIG_DIR") or
+                                   os.path.join(project_root(), "config"), "config.yaml"))
+    st = sticker_mod.StickerStore(
+        media_dir=(cfg.stickers.dir if os.path.isabs(cfg.stickers.dir)
+                   else os.path.join(project_root(), cfg.stickers.dir)),
+        site=cfg.stickers.site, packs=list(cfg.stickers.packs or []),
+        enabled=bool(cfg.stickers.enabled),
+        ffmpeg_path=getattr(cfg.stickers, "ffmpeg_path", "") or "",
+        send_mode=getattr(cfg.stickers, "send_mode", "static") or "static",
+        log=lambda m: print(f"[stickers] {m}"))
+    if args.action == "sync":
+        print(st.sync(limit=args.limit))
+    elif args.action == "search":
+        for it in st.search(args.query, limit=5):
+            print(f'{it["id"]}\t{it["emotion"]}\t{"/".join(it["tags"][:4])}')
+    else:
+        packs = {}
+        for it in st.items:
+            packs[it["pack"]] = packs.get(it["pack"], 0) + 1
+        print({"total": len(st.items), "packs": packs, "dir": st.dir})
+
+
 def main(argv=None):
     if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
         try:
@@ -2366,11 +3519,18 @@ def main(argv=None):
     demo_p = sub.add_parser("demo", help="端到端演示")
     demo_p.add_argument("--fresh", action="store_true", help="清空后重建演示库")
     demo_p.set_defaults(func=cmd_demo)
+    st_p = sub.add_parser("stickers", help="表情包库（sync/search/list）")
+    st_p.add_argument("action", choices=["sync", "search", "list"], nargs="?", default="list")
+    st_p.add_argument("--query", default="", help="search 的关键词")
+    st_p.add_argument("--limit", type=int, default=None, help="sync 只下前 N 张")
+    st_p.set_defaults(func=cmd_stickers)
     sub.add_parser("status", help="查看状态").set_defaults(func=cmd_status)
     serve_p = sub.add_parser("serve", help="HTTP API + 网页客户端 + 内置调度线程")
     serve_p.add_argument("--host", default="127.0.0.1", help="默认仅本机；对外用 0.0.0.0 + 令牌")
     serve_p.add_argument("--port", type=int, default=8787)
-    serve_p.add_argument("--interval", type=float, default=60.0, help="内置调度线程间隔（秒）")
+    serve_p.add_argument("--interval", type=float, default=None,
+                         help="内置调度线程间隔（秒）；不给则用配置 tick.fast_seconds"
+                              "（控制台可热改，改完下一轮生效）")
     serve_p.set_defaults(func=cmd_serve)
     wx_p = sub.add_parser("wechat", help="微信桥：把小满接到个人微信（需 wcferry + PC 微信，"
                                          "见 docs/wechat_setup.md）")

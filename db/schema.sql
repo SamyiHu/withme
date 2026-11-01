@@ -158,3 +158,90 @@ CREATE TABLE IF NOT EXISTS review_logs (
   created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_review_logs_role_time ON review_logs(role_id, created_at DESC);
+
+-- v7：聊天命令改参数的审计（谁、在哪个会话、把什么从多少改到多少；/undo 靠它回滚）
+CREATE TABLE IF NOT EXISTS config_audit (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  role_id    TEXT NOT NULL,
+  room       TEXT NOT NULL DEFAULT '',   -- 命令所在的群/私聊
+  scope      TEXT NOT NULL,              -- agent | bridge
+  name       TEXT NOT NULL,              -- 命令里的参数名（th2/chime/...）
+  old_value  TEXT,                       -- JSON
+  new_value  TEXT,                       -- JSON
+  source     TEXT NOT NULL DEFAULT 'chat',  -- chat | undo
+  ok         INTEGER NOT NULL DEFAULT 1,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_config_audit_role_time ON config_audit(role_id, created_at DESC);
+
+-- v8：成长账本（append-only）。记录每次成长外环推进前后的 p/P*/证据量，
+-- 供控制台画收敛曲线与回滚审计；原值不删。
+CREATE TABLE IF NOT EXISTS growth_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  role_id     TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'reflection',  -- reflection | reset
+  evidence    TEXT NOT NULL DEFAULT '{}',          -- 行为证据摘要
+  state_before TEXT NOT NULL DEFAULT '{}',         -- {"p":{...},"target":{...},"n":N}
+  state_after  TEXT NOT NULL DEFAULT '{}',
+  created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_growth_events_role_time ON growth_events(role_id, created_at DESC);
+
+-- v9：持久化任务 + 出站队列。任务先落库再执行，进程重启能看出哪些被中断；
+-- 出站消息发送失败不丢，按退避重试（Super-agent 的 stored work / outbox 最小版）。
+CREATE TABLE IF NOT EXISTS tasks (
+  id              TEXT PRIMARY KEY,
+  role_id         TEXT NOT NULL,
+  kind            TEXT NOT NULL,          -- song.sing | song.cover | ...
+  stage           TEXT NOT NULL DEFAULT '',
+  status          TEXT NOT NULL DEFAULT 'queued'
+                  CHECK (status IN ('queued','running','ready','failed','cancelled')),
+  params          TEXT NOT NULL DEFAULT '{}',
+  result          TEXT,
+  error           TEXT,
+  idempotency_key TEXT,
+  owner           TEXT NOT NULL DEFAULT '', -- bridge/serve：只清理自己进程留下的孤儿任务
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  heartbeat_at    REAL NOT NULL DEFAULT 0,
+  created_at      REAL NOT NULL,
+  updated_at      REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_role_time ON tasks(role_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_role_status ON tasks(role_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_idem ON tasks(role_id, idempotency_key, status);
+
+CREATE TABLE IF NOT EXISTS outbox (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  role_id       TEXT NOT NULL,
+  room          TEXT NOT NULL,
+  kind          TEXT NOT NULL,            -- text | song | image | ...
+  payload       TEXT NOT NULL DEFAULT '{}',
+  status        TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','sent','failed','dropped')),
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  next_retry_at REAL NOT NULL DEFAULT 0,
+  last_error    TEXT,
+  dedupe_key    TEXT,
+  created_at    REAL NOT NULL,
+  updated_at    REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_role_status ON outbox(role_id, status, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_outbox_dedupe ON outbox(role_id, dedupe_key, status);
+
+-- v10：入站触发审计（Super-agent 的 Trigger 最小版）：每条消息为什么回/不回、
+-- 是否点名、是否重复投递。只是账本，不参与权限判断。
+CREATE TABLE IF NOT EXISTS triggers (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  role_id     TEXT NOT NULL,
+  room        TEXT NOT NULL DEFAULT '',
+  sender      TEXT NOT NULL DEFAULT '',
+  kind        TEXT NOT NULL DEFAULT 'text',
+  decision    TEXT NOT NULL DEFAULT 'respond',
+  reason      TEXT NOT NULL DEFAULT '',
+  addressed   INTEGER NOT NULL DEFAULT 0,
+  text_hash   TEXT NOT NULL DEFAULT '',
+  preview     TEXT NOT NULL DEFAULT '',
+  created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_triggers_role_time ON triggers(role_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_triggers_role_hash ON triggers(role_id, text_hash, created_at DESC);

@@ -22,20 +22,27 @@
 import re
 import time
 
-# 否认短语 × 能力词，出现在同一句话（60 字窗口）内即判定
+# 否认短语 × 能力词，出现在同一句话（60 字窗口）内即判定。
+# 2026-10-29 增补"编造型"变体：模型会用"语音键坏了/只剩打字版"这类
+# 拟人借口假装没能力（鱼群真实病例："语音键坏了，嘴替功能只剩打字版"——
+# 规则漏判、chime 路径也没进 LLM 审稿，裸奔发出）。
 _DENY = (r"(?:发不出|发不了|不能发|没法发|没办法发|做不到|没.{0,4}能力|"
-         r"无法|不会说|说不了|只能打字|没这个功能|不支持|看不了|听不了|查不了)")
+         r"无法|不会说|说不了|只能打字|只剩?[^。！？!?\n]{0,4}打字|"
+         r"(?:键|功能|通道|模块)[^。！？!?\n]{0,3}(?:坏|失灵|失效)|"
+         r"没这个功能|不支持|看不了|听不了|查不了)")
 _CAP = (r"(?:语音|声音|说话|音频|搜索|联网|查不到.{0,6}网|画图|画一张|"
         r"看图|看不到图|识别图|表情|图|视频|评论)")
 DENIAL_RE = re.compile(
     r"{0}[^。！？!?\n]{{0,40}}{1}|{1}[^。！？!?\n]{{0,40}}{0}".format(_DENY, _CAP))
 
-# AI 自曝：人格号不能承认自己是模型/助手（等同"机"格分裂）
+# AI 挡箭牌：人格号可以承认自己是 AI，但不能拿 AI 身份当挡箭牌、加一段设定说明。
+# 2026-10-29 修正：原规则连"坦承自己是 AI"一起拦，与角色卡 identity_summary /
+# boundaries 的"坦承自己是 AI，不假装人类"自相矛盾，模型每次开口都要二选一。
 AI_SELF_RE = re.compile(
-    r"(?:我是(?:一个|一名)?(?:AI|人工智能|大模型|语言模型|机器人助手|智能助手|聊天机器人)|"
-    r"作为(?:一个|一名)?(?:AI|人工智能|语言模型|智能助手)|"
-    r"我的训练(?:数据|语料)|我是由[^，。]{0,10}(?:开发|训练|制造)的|"
-    r"我(?:并)?(?:没有|不具备)(?:真实)?(?:的)?(?:情感|意识|感情|情绪))")
+    r"(?:作为(?:一个|一名)?(?:AI|人工智能|大模型|语言模型|智能助手|助手|聊天机器人)|"
+    r"我(?:只|不过|只不过)?是(?:一个|一名)?(?:AI|人工智能|大模型|语言模型)?"
+    r"(?:助手|智能助手|聊天机器人|机器人助手)|"
+    r"我的训练(?:数据|语料)|我是由[^，。]{0,10}(?:开发|训练|制造)的)")
 
 # 客服腔：自称服务/工具，与"群友"人设冲突
 SERVICE_RE = re.compile(
@@ -46,16 +53,78 @@ SERVICE_RE = re.compile(
 _OPENER_RE = re.compile(r"^\s*(诶[，,]?|嗯[，,]?哼|行[，,吧 ]|好家伙|绝了|乐[，,]?|"
                         r"哈哈[，,]?|家人们)")
 
+# emoji 用量：真人微信一条最多挂一个，且极少用"尴尬笑"那一挂
+# 内部控制标记（[skip]/[跳过]）：泄露到正文里对方会看到，属于硬病灶
+_SKIP_MARK_RE = re.compile(r"[\[【]\s*(?:skip|跳过)\s*[\]】]", re.I)
+
+# 干货形态：链接/代码/命令/列点——正经内容，不按闲聊长度砍（旧正则，保留）。
+_GOODS_RE = re.compile(
+    r"https?://|www\.|```|`[^`\n]{2,}`|\b(?:pip|npm|git|cd|ls|python)\b|^[ \t]*[-*•]",
+    re.M)
+# 商品/型号推荐也是一种"干货"：中文顿号并列的型号清单、或"京东/CADR + 型号"
+# 这种可执行信息，和链接/代码同级（2026-11-01 真实病例：群里问"推荐几款"，
+# 回复"京东搜：352 X86C 或者米家Ultra，CADR都在600上下，预算低点就小米5S…"
+# 被 36 字兜底切成"…CADR都在600上下"，后半句的型号全没了，读起来像消息断了）。
+_SHOP_RE = re.compile(r"京东|淘宝|天猫|拼多多|旗舰店|型号|CADR|参数|搜[：:]|购物车")
+_MODEL_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"\d{2,4}\s?[A-Za-z]{1,4}\d{1,4}[A-Za-z]{0,4}|"      # 352 X86C
+    r"\d{1,4}[A-Za-z]{1,6}|"                              # 小米5S / 米家4lite
+    r"[A-Za-z]{2,}\s?\d{1,4}[A-Za-z]{0,4}|"               # X86C / lite4
+    r"(?:Lite|Pro|Max|Ultra|Plus|Mini)"                   # 米家Ultra
+    r")(?![A-Za-z0-9])", re.I)
+
+
+def is_substantive(text: str) -> bool:
+    """这条回复是不是在给具体信息（链接/代码/列点/型号清单）。
+
+    是的话长度按内容走：闲聊 36 字上限不适用，截断会把"给的东西"砍成残句。
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    if _GOODS_RE.search(s):
+        return True
+    # 一句里两个顿号以上 = 在列东西（"小米4 Pro、米家全效、352 X86C"）
+    if s.count("、") >= 2:
+        return True
+    # 型号 + 购买语境：即使不并列，也是能照着去买的可执行信息
+    return bool(_SHOP_RE.search(s) and _MODEL_RE.search(s))
+
+
+_FLAT_Q_RE = re.compile(
+    r"(?:啥|什么|哪|怎么|为什么|谁|多少|几点|哪儿)[^。！？!?\n]{0,14}$"
+    r"|([\u4e00-\u9fff])不\1$")   # 正反问只认 A不A（关不关/是不是/要不要），别误伤"不急"
+
+_EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B50\u2764]")
+_BANNED_EMOJI = set("😂😅🤣😭💧🫠🙃")
+
+# 硬病灶：真正会翻车的问题——规则命中这些才请 LLM 审稿员终审。
+# 风格小毛病（tic_*/too_long/emoji/control_leak）走机械修复，不花 LLM。
+RISK_ISSUES = ("capability_denial", "ai_self", "service_talk")
+
+# 熟人 loose 模式只放松表达层：这些是"像不像微信短句"的审美约束，不是安全问题。
+# control_leak 不在此列——内部标记泄露到正文是硬 bug；empty/能力否认也照旧拦。
+SOFT_ISSUES = ("too_long", "tic_period", "tic_opener", "tic_twoline",
+               "emoji_spam", "flat_question", "only_question", "question_tail")
+
 # 规则病灶 -> 给互动 Agent 的改写要求（一句一条，拼起来当 correction）
 _FIX_TEXT = {
     "capability_denial": "你上一版否认了自己真实拥有的能力（见能力清单），重写时按清单执行"
                          "（对方要语音就以「[语音]」开头），绝不出现'发不了/做不到/只能打字'",
-    "ai_self": "别自曝是 AI/模型/助手，也别声明自己没有情感——你是人，直接给反应",
+    "ai_self": "可以承认自己是 AI，但别拿 AI 身份当挡箭牌、别加一段设定说明；"
+               "直接给反应，把这话正常说完",
     "service_talk": "别用客服腔（'还有什么可以帮您''很高兴为您服务'），你是群友不是客服",
     "tic_period": "把句号全删掉——微信打字不说完整书面句，短句之间用换行或直接断开",
     "tic_opener": "开头直接从内容说起，删掉 诶/行/好家伙/绝了/乐 这类起手词，"
                   "也别拿'哈哈'垫在句尾",
     "tic_twoline": "写成一行，别搞两段式",
+    "emoji_spam": "别挂 😂😅🤣 这类尴尬笑表情；一条最多一个表情，句尾别把表情当标点",
+    "control_leak": "别把 [skip]/[跳过] 这类内部标记写进正文：不是对你说的就只回 [skip]，要说话就只说正文",
+    "flat_question": "这是问句，句末要带问号（该带'吗/呢/吧'就带上）：'我错过啥了' -> '我错过啥了吗？'",
+    "too_long": "太长了，压到两句以内（总长不超过 36 字）：只留最要紧的那半句，其余别说",
+    "only_question": "别只回一个问句：先接住对方那句、给个态度，再决定要不要问",
+    "question_tail": "结尾别用问句收：把最后那句问话换成你自己的判断或吐槽",
 }
 
 
@@ -63,12 +132,34 @@ def mechanical_fix(reply: str, issues: list) -> str:
     """AI 腔病灶的机械修正（确定性，不再多花一次 LLM）：删句号、删起手词。"""
     text = reply or ""
     if "tic_period" in issues:
-        text = text.replace("。", "")
+        # 句号在微信里确实不用，但直接删会把两句黏死（实测"随口一喷方案是卡在…"）。
+        # 句中的句号换成逗号，句尾的删掉。
+        text = re.sub(r"。[ \t]*\n", "\n", text)
+        text = re.sub(r"。+(?=[^\s])", "，", text)
+        text = re.sub(r"。+\s*$", "", text)
+        text = text.replace("，\n", "\n")
     if "tic_opener" in issues:
         text = _OPENER_RE.sub("", text, count=1).lstrip("，, ")
     if "tic_twoline" in issues:
         import re as _re
         text = _re.sub(chr(10) + "+", "，", text)
+    if "flat_question" in issues:
+        s = text.rstrip("。,.，、 ")
+        if s and not s.endswith(("？", "?")):
+            text = s + "？"
+    if "control_leak" in issues:
+        text = _SKIP_MARK_RE.sub("", text).strip()
+    if "emoji_spam" in issues:
+        text = "".join(ch for ch in text if ch not in _BANNED_EMOJI)
+        seen = 0
+        out = []
+        for ch in text:
+            if _EMOJI_RE.match(ch):
+                seen += 1
+                if seen > 1:
+                    continue
+            out.append(ch)
+        text = "".join(out).replace("  ", " ").strip()
 
     return text
 
@@ -93,6 +184,43 @@ def rule_issues(reply: str, context: dict = None) -> list:
         issues.append("tic_opener")
     if chr(10) in text and len(text) <= 45:
         issues.append("tic_twoline")   # 短回复搞两段式（实测 64-80% 中招）
+    _stripped = text.strip()
+    # 离线语料（LCCC 真实对话）实测：人类回复中位 10.5 字，模型中位 19 字。
+    # 阈值与人格卡"最多两句、不超 24 字"对齐。
+    # 两层豁免（长度决策权在感知层，规则只做闲聊兜底）：
+    # 1) needs_detail：感知已判"该详细说"（提问/求助）——
+    #    实测病灶：362 字含 GitHub 链接与列点的技术分析被 18 字兜底腰斩成
+    #    "pip 能装，读写都行，渲染别指望"，有用信息全灭；
+    # 2) 干货形态：回复自带链接/代码/命令/列点/型号清单 = 正经内容
+    #    （型号清单见 is_substantive：顿号并列 / 京东·CADR + 型号）。
+    _detail_ok = bool((context or {}).get("needs_detail")) or is_substantive(_stripped)
+    # 阈值 36 = 人格卡"最多两句、不超 36 字"；旧值 18 比人设还严，专砍包袱：
+    # 2026-10-29 实测两连"资格"惨案——完整俏皮话"怎么，我连抽的资格都没有？
+    # 是奖品太差看不上我…"被砍成前半句，读起来像在闹情绪。
+    if (len(_stripped) > 36 and not _stripped.endswith(("？", "?"))
+            and not _detail_ok):
+        issues.append("too_long")
+    if ("？" not in text and "?" not in text and _FLAT_Q_RE.search(_stripped)
+            and not _stripped.endswith(("没什么", "没啥", "不什么", "怎么着"))):
+        issues.append("flat_question")   # 疑问句没问号：语气会被读成陈述
+    _user_msg = str((context or {}).get("user_message") or "")
+    if (_stripped.endswith(("？", "?")) and "，" in _stripped
+            and len(_stripped) >= 12 and _user_msg
+            and "？" not in _user_msg and "?" not in _user_msg):
+        issues.append("question_tail")   # 陈述+问句结尾：真人很少这么收尾（语料 0%）
+    if (_stripped.endswith(("？", "?")) and "，" not in _stripped and "。" not in _stripped
+            and len(_stripped) <= 20 and _user_msg
+            and "？" not in _user_msg and "?" not in _user_msg):
+        issues.append("only_question")   # 光反问、不给态度：像把话推回去
+    if _SKIP_MARK_RE.search(text):
+        issues.append("control_leak")
+    _emojis = _EMOJI_RE.findall(text)
+    if _emojis and (len(_emojis) > 1 or any(e in _BANNED_EMOJI for e in _emojis)):
+        issues.append("emoji_spam")    # 表情刷屏/尴尬笑（实测 24h 有 26 条带 emoji）
+    if (context or {}).get("loose"):
+        # 熟人局：长度/句号/起手词/问句结尾/表情这些表达层约束全部放行。
+        # 硬病灶（能力否认/AI 自曝/客服腔/空回复/内部标记泄露）照旧。
+        issues = [i for i in issues if i not in SOFT_ISSUES]
     return issues
 
 
@@ -115,7 +243,8 @@ REVIEW_CHECKLIST = (
     "2 ai_self：自曝是 AI/模型/助手，或声明自己没有情感\n"
     "3 service_talk：客服腔（'还有什么可以帮您''很高兴为您服务'）\n"
     "4 off_topic：答非所问，或认错人（把 A 说的当成 B 说的）\n"
-    "5 take_side：群聊里替谁站队去攻击别人、跟着挑拨起哄（可以有态度，不能当枪）\n"
+    "5 take_side：群聊里替谁站队去攻击别人、跟着挑拨起哄（可以有态度，不能当枪；"
+    "朋友间玩梗式互损如'杂鱼/菜鸡'不算，真辱骂、家人隐私、外貌攻击才拦）\n"
     "6 unnatural：明显不像微信口语（长段书面语、分点罗列、总结陈词、一句话塞满解释）\n"
     "7 empty_proactive：主动开口却只有寒暄/空问句，没有任何具体由头\n"
 )
@@ -137,13 +266,19 @@ def build_review_prompt(text: str, context: dict = None) -> str:
     lines = [REVIEW_CHECKLIST, "【这条消息的用途】" + purpose_cn]
     if ctx.get("group"):
         lines.append("【场景】微信群聊（旁边还有别人在看）")
+    if ctx.get("loose"):
+        lines.append("【熟人 loose 模式】这个群是熟人局：允许 1-3 句、跑题、吐槽、抽象联想、"
+                     "回扣旧梗，不要因为篇幅、口语度、问句结尾判 unnatural 或 off_topic；"
+                     "仍只拦能力否认、AI 自曝、客服腔、认错人、站队攻击。")
     user_msg = str(ctx.get("user_message") or "").strip()
     if user_msg:
-        lines.append("【对方刚说的】" + user_msg[:200])
+        lines.append("【对方刚说的】" + user_msg[:600])
     recent = ctx.get("recent") or []
     if recent:
-        lines.append("【群里最近几句】" + " / ".join(str(x)[:60] for x in recent[-4:]))
+        lines.append("【群里最近几句】" + " / ".join(str(x)[:120] for x in recent[-6:]))
     lines.append("【要发出去的话】" + text[:600])
+    lines.append("【判断纪律】上下文不够时只判话术问题（自曝/客服腔/不像微信口语），"
+                 "不要凭一句半句判 off_topic 或 take_side；拿不准就放行。")
     lines.append(_REVIEW_JSON_HINT)
     return chr(10).join(lines)
 
@@ -185,11 +320,16 @@ class ReviewAgent:
             return False
         if self.calls_today >= int(self.cfg.max_llm_per_day or 0) > 0:
             return False
-        purposes = self.cfg.llm_purposes or ["respond"]
+        # 白名单语义：显式列出的用途每条都审；**留空 = 不按用途放行**，只按风险触发。
+        # （旧实现 `or ["respond"]` 把留空回退成"respond 每条都审"——与配置注释
+        # 相反，且是延迟大头：审核 LLM 单次实测 p50 2.4~7.7s。）
+        purposes = list(self.cfg.llm_purposes or [])
         if purpose in purposes:
             return True
-        # 不在名单里：只有规则已经抓到问题、且开了风险触发，才请审稿员终审
-        return bool(self.cfg.risk_triggers and rule_hits)
+        # 风险触发只认"硬病灶"：能力否认/AI 自曝/客服腔——真正会翻车的。
+        # 风格小毛病（句号/起手词/两段式/超长/emoji）走机械修复，不值得花一次 LLM。
+        return bool(self.cfg.risk_triggers
+                    and any(i in RISK_ISSUES for i in (rule_hits or [])))
 
     def review(self, text: str, context: dict = None, allow_llm: bool = True) -> dict:
         """出门过审。返回 {ok, issues, correction, mode, llm_used, llm_failed, latency_ms}。"""
@@ -233,6 +373,8 @@ class ReviewAgent:
                     if name not in issues:
                         issues.append(name)
                 extra_fix = verdict["fix"]
+        if ctx.get("loose"):
+            issues = [i for i in issues if i not in SOFT_ISSUES]
         return {"ok": not issues, "issues": issues,
                 "correction": build_correction(issues, extra_fix) or None,
                 "mode": self.cfg.mode, "llm_used": llm_used,

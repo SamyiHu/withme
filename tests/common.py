@@ -6,6 +6,7 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_TMP_SEQ = 0
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
@@ -30,7 +31,13 @@ def make_tmpdir() -> str:
     except OSError:
         base = os.path.join(ROOT, ".test_tmp")
         os.makedirs(base, exist_ok=True)
-        d = os.path.join(base, "t_%d_%d" % (os.getpid(), int(time.time() * 1000) % 1000000))
+        # 毫秒命名会撞（同一毫秒里连续两次调用返回同一个目录，两个测试 Agent 共用
+        # 一个库→状态互相污染，test_seed_reproducible_reply 就随机失败）；
+        # 这里仍用 os.makedirs（mkdtemp 建的目录在这个沙箱里继承不了可写 ACL），
+        # 靠 pid + 纳秒 + 自增序号保证唯一。
+        global _TMP_SEQ
+        _TMP_SEQ += 1
+        d = os.path.join(base, "t_%d_%d_%d" % (os.getpid(), time.time_ns(), _TMP_SEQ))
         os.makedirs(d, exist_ok=True)
         return d
 

@@ -3,6 +3,8 @@
 设计：文件 -> dict（yamlite）-> from_dict（校验+默认值）-> dataclass。
 校验失败一次性收集全部错误再抛 ConfigError，方便一次改对。
 """
+import json
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -30,6 +32,9 @@ class LLMConfig:
     vision_model: str = ""  # 视觉模型（如 cn:glm-4.6v）；空 = 不启用看图
     # 某些网关/桥接会丢弃 system 角色消息：置 true 时把整段设定并入 user 消息
     prompt_in_user: bool = False
+    # 思考预算：low | medium | high（空=不下发，沿用网关默认）。
+    # 实测本机网关支持 reasoning_effort：low 推理 203 字 / medium 354 / high 374。
+    reasoning_effort: str = ""
 
 
 @dataclass
@@ -71,8 +76,8 @@ class GateConfig:
 @dataclass
 class MemoryConfig:
     provider: str = "sqlite"   # sqlite | mem0（mem0 需 pip install mem0ai fastembed）
-    retrieval_top_k: int = 5
-    min_salience: float = 0.3
+    retrieval_top_k: int = 8
+    min_salience: float = 0.4
     # 检索排序的时间衰减半衰期（天）：未被触碰的记忆权重减半，下限 0.35；0=关闭
     salience_halflife_days: float = 14.0
     # mem0 后端的攒批提炼：候选消息攒够 batch_min_items 且距上次 >= batch_min_minutes
@@ -91,9 +96,9 @@ class DialogueConfig:
     原则 C 只约束"不塞完整聊天记录"，本段决定塞多少、超了怎么办：
     超出 window 的消息不直接丢，攒到 compress_trigger 条时后台压成一段
     滚动摘要（合并旧摘要），与近窗原文一起进 prompt。"""
-    window: int = 16              # 近窗原文条数（prompt 最近对话段）
-    compress_trigger: int = 30    # 未压缩消息积压达到该条数触发压缩
-    summary_max_chars: int = 900  # 摘要长度上限（超出由提炼提示词自行控制，这里硬截）
+    window: int = 30              # 近窗原文条数（prompt 最近对话段）
+    compress_trigger: int = 60    # 未压缩消息积压达到该条数触发压缩
+    summary_max_chars: int = 1500  # 摘要长度上限（超出由提炼提示词自行控制，这里硬截）
 
 
 @dataclass
@@ -112,8 +117,16 @@ class ReflectionConfig:
     min_new_messages: int = 6          # 触发反思需要的最小新消息数（证据门槛）
     max_drift: float = 0.15            # 吸引子中心相对角色卡的总漂移上限
     drift_step: float = 0.05           # 单次反思可调整的步长上限
-    max_extra_rules: int = 2           # 聊天习惯在角色卡之外最多新增条数
+    max_extra_rules: int = 3           # 角色卡之外最多累积几条成长规则（满了淘汰最旧）
     max_insights: int = 3              # 单次最多沉淀的洞察条数
+    # 成长外环（docs/growth.md）：p 向用户拟合目标 P* 收敛，有包络、会饱和
+    growth_envelope: float = 0.25      # 每维中心偏移包络（相对角色卡）
+    growth_eta0: float = 0.5           # 初始步长系数
+    growth_eta_min: float = 0.01       # 长期可塑性下限（目标真的变了还能跟上）
+    growth_wake_gap: float = 0.02      # 偏离超过这个量才启用可塑性下限
+    growth_kappa: float = 200.0        # 步长随证据量指数衰减的尺度（条）
+    growth_max_step: float = 0.03      # 单次反思最大移动
+    growth_alpha: float = 0.25         # 目标估计 P* 的 EMA 学习率
 
 
 @dataclass
@@ -160,10 +173,14 @@ class ReviewerConfig:
     审稿调用失败不阻断发送（宁可发出去，也不能因为审核挂了失联）。
     """
     mode: str = "llm"
-    llm_purposes: list = field(default_factory=lambda: ["respond", "proactive", "chime"])
+    # 默认不再"每条都请审稿员"：只让规则命中的回复进 LLM 终审。
+    # 理由是审稿员只看得到一句话，判 off_topic/unnatural 的误判率高于收益（2026-10-29 实测：
+    # 149 条审核里 30% 的终稿与原稿不同，绝大多数是风格规则，不是实质问题）。
+    llm_purposes: list = field(default_factory=list)
     risk_triggers: bool = True       # 规则命中时也请审稿员终审
     max_llm_per_day: int = 400       # 审稿 LLM 调用日上限（0=不限），防预算被审稿烧穿
-    max_tokens: int = 260            # 审稿只要一个短 JSON，别让它写作文
+    max_tokens: int = 800            # 审稿只要一个短 JSON；给足是因为思考型模型会先吃预算，
+                                     # 260 实测约 1/3 的调用返回空（2026-10-28 实测）
     temperature: float = 0.1
     timeout_seconds: float = 20.0    # 审稿超时：宁可放行也不卡住回复
 
@@ -192,6 +209,63 @@ class ImageGenConfig:
     model: str = "cogview-3-flash"
     size: str = "1024x1024"
     timeout_seconds: int = 60
+
+
+@dataclass
+class SongGenConfig:
+    """唱歌（本地 ACE-Step 1.5 / acestep.cpp Vulkan 后端）：点唱 -> 55 秒歌声 -> 语音气泡。
+
+    provider=acestep_cpp 时连本地 `ace-server`（默认 127.0.0.1:8085）；
+    provider=mock 只给测试用，生成 1 秒正弦波，不联网。"""
+    enabled: bool = True
+    provider: str = "acestep_cpp"       # acestep_cpp | mock
+    base_url: str = "http://127.0.0.1:8085"
+    model: str = "acestep-v15-turbo-Q8_0.gguf"          # DiT；高音质可换 sft / xl-*
+    lm_model: str = "acestep-5Hz-lm-1.7B-Q8_0.gguf"     # 歌词/编曲 LM
+    duration_seconds: float = 55.0      # 默认时长；对话里说"唱30秒/1分钟"会覆盖
+    max_duration_seconds: float = 300.0 # 单次可请求的最长时长（ACE-Step 上限 600）
+    max_send_seconds: float = 55.0      # 语音气泡上限 60s；超过这个时长只发高音质文件
+    style: str = ""                     # 留空=必须由用户说；不写死默认曲风
+    voice: str = "女声"                 # 后端可调音色描述（男声/低沉男声/清亮少女音…）
+    vocal_language: str = "zh"
+    output_format: str = "mp3"
+    mp3_bitrate: int = 320              # 文件版音质；SILK 气泡仍受 24kHz mono 限制
+    send_mode: str = "both"             # bubble（语音气泡）| file（高音质文件）| both
+    inference_steps: int = 8            # turbo 模型推荐 8；sft 用 32-50
+    guidance_scale: float = 1.0         # turbo 用 1.0；base 模型才需要 7 左右
+    timeout_seconds: int = 240
+    poll_seconds: float = 1.0
+    out_dir: str = "data/songs"         # 相对仓库根
+    max_lyrics_chars: int = 600         # 用户送入的具体歌词可以长一点，别砍太狠
+    # ---- 换音色（本地 Seed-VC，跑在独立 venv 里；核心仓库零依赖不受影响）----
+    voice_clone_enabled: bool = False
+    voice_clone_endpoint: str = ""       # 常驻 worker（推荐）：http://127.0.0.1:8090
+    voice_clone_python_exe: str = ""    # 兜底子进程：seedvc venv 的 python.exe
+    voice_clone_script: str = ""        # 兜底子进程：tools/song_voice_convert.py
+    voice_clone_reference: str = ""     # 她的音色参考音频（15-30s 干声）
+    voice_clone_seedvc_dir: str = ""    # seed-vc 代码目录（含 inference.py）
+    voice_clone_demucs_repo: str = ""   # demucs 模型目录（htdemucs_ft.yaml + .th）
+    voice_clone_steps: int = 30         # 扩散步数；唱歌 30-50
+    voice_clone_timeout: int = 600
+    voice_clone_vocal_gain: float = 1.0
+    voice_clone_high_note_protect_hz: float = 0.0  # 高音保护：源 f0≥该值时保留原唱；0=关闭（会有拼接断层，默认关）
+    voice_clone_eta_seconds: int = 150  # ack 里报的预计增量耗时（CPU 实测再调）
+
+
+@dataclass
+class StickersConfig:
+    """表情包库（贴纸）：模型在回复里写 [sticker:情绪词] -> 桥发真表情图。
+
+    图片按需从 kiriyuki.com 拉取（作者：B站 可以叫我云大人），
+    元数据随仓库在 assets/stickers/nekowhale.json。"""
+    enabled: bool = True
+    site: str = "https://kiriyuki.com"
+    packs: list = field(default_factory=lambda: ["大肥鱼", "大肥鱼和GPT娘"])
+    dir: str = "data/stickers"        # 相对仓库根；下载缓存
+    ffmpeg_path: str = ""             # 压小动图用的 ffmpeg；空=自动找（需要带 gif 支持）
+    send_mode: str = "static"         # static=发静态缩略图（当前 hook 只支持图片消息）；animated=发压缩动图
+    max_per_reply: int = 1
+    search_top_k: int = 3
 
 
 @dataclass
@@ -227,9 +301,19 @@ class WechatConfig:
     group_mention_only: bool = True   # 群里只响应"@小满"（atuserlist 命中自己）与主人；False=所有消息都回
     groups_proactive: bool = True     # 群主动搭话：频率/时机由引擎闸门把关（冷却/预算/免打扰），发送时 @ 最近说话人
     group_chime: bool = True          # 群智能插嘴：群友聊天攒够几条后，AI 自己判断要不要接一句（未被@时）
-    group_chime_cooldown_seconds: float = 300.0  # 两次插嘴最小间隔（秒/群）
-    group_chime_daily_max: int = 12   # 每群每天最多自发插嘴次数（防刷屏硬顶）
+    group_chime_cooldown_seconds: float = 120.0  # 两次插嘴最小间隔（秒/群）
+    group_chime_daily_max: int = 12   # 每群每天最多"自发插嘴"次数（"在跟我说话"的回复不占这个额度）
+    group_chime_max_evals_per_hour: int = 40  # 每群每小时最多判几次"要不要接"（省 token 的配额）
+    group_chime_after_reply_seconds: float = 20.0  # 刚在这个群发过话，这段时间内不再插嘴（防双回复/连发）
+    group_send_max_per_minute: int = 6             # 同一会话 60s 内最多发几条（回复/插嘴/主动共用的硬闸）
+    max_message_age_seconds: float = 180.0         # 超过这么老的消息当历史回放直接丢（防重启后把过去全答一遍）
+    proactive_warmup_seconds: float = 300.0        # 桥启动后这段时间内不主动开口（防"一重启就刷屏"）
     group_self_aliases: list = field(default_factory=list)  # 群里没@但这样叫也算叫它（群昵称/人设名会自动识别）
+    enabled_chats: list = field(default_factory=list)  # 启用范围：空=全部会话；非空=只处理列出的群房间号/私聊 wxid
+    disabled_chats: list = field(default_factory=list)  # 停用名单（优先于 enabled_chats）：/chat off 写这里，重启后仍生效
+    loose_chats: list = field(default_factory=list)    # 熟人 loose 模式：这些会话放松表达层（长度/审稿/风格约束），安全与频率硬闸不变
+    observe_chats: list = field(default_factory=list)  # 观察模式：这些会话的主动/插嘴只记录不发送，先看“本来会说什么”
+    task_stale_seconds: float = 1200.0  # 后台任务心跳超时：超过则标失败并通知用户（防“在唱了”后静默）
     media_dir: str = "data/wechat_media"   # 相对仓库根；语音/图片中转目录
     wxhook: WxhookConfig = field(default_factory=WxhookConfig)
 
@@ -253,7 +337,9 @@ class AppConfig:
     asr: ASRConfig = field(default_factory=ASRConfig)
     web_search: SearchConfig = field(default_factory=SearchConfig)
     image_gen: ImageGenConfig = field(default_factory=ImageGenConfig)
+    song_gen: SongGenConfig = field(default_factory=SongGenConfig)
     wechat: WechatConfig = field(default_factory=WechatConfig)
+    stickers: StickersConfig = field(default_factory=StickersConfig)
 
 
 # ---------------- persona.yaml ----------------
@@ -293,9 +379,37 @@ def load_config(path: str) -> AppConfig:
     return config_from_dict(data)
 
 
+def persona_overrides_path(path: str) -> str:
+    """人格覆盖文件：与 persona.yaml 同目录，控制台「基线 / 极限设定」写这里。
+
+    不直接改 persona.yaml（会丢注释、也没法一键恢复出厂）。
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(path)),
+                        "persona.overrides.json")
+
+
+def _deep_merge(dst: dict, src: dict) -> dict:
+    out = dict(dst or {})
+    for k, v in (src or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def load_persona(path: str) -> Persona:
     with open(path, "r", encoding="utf-8") as f:
         data = yamlite.loads(f.read())
+    ov_path = persona_overrides_path(path)
+    if os.path.exists(ov_path):
+        try:
+            with open(ov_path, "r", encoding="utf-8") as f:
+                ov = json.load(f)
+            if isinstance(ov, dict) and ov:
+                data = _deep_merge(data, ov)
+        except Exception as e:  # noqa: BLE001  覆盖文件坏了别拖垮启动
+            print(f"[persona] 覆盖文件读取失败，忽略：{e!r}")
     return persona_from_dict(data)
 
 
@@ -321,10 +435,12 @@ def config_from_dict(data: dict) -> AppConfig:
         _fill_dataclass(cfg.asr, data.get("asr", {}), errors, "asr")
         _fill_dataclass(cfg.web_search, data.get("web_search", {}), errors, "web_search")
         _fill_dataclass(cfg.image_gen, data.get("image_gen", {}), errors, "image_gen")
+        _fill_dataclass(cfg.song_gen, data.get("song_gen", {}), errors, "song_gen")
         _fill_dataclass(cfg.wechat, {k: v for k, v in data.get("wechat", {}).items()
                                      if k != "wxhook"}, errors, "wechat")
         _fill_dataclass(cfg.wechat.wxhook, (data.get("wechat", {}) or {}).get("wxhook", {}),
                         errors, "wechat.wxhook")
+        _fill_dataclass(cfg.stickers, data.get("stickers", {}), errors, "stickers")
         m = data.get("motivation", {})
         _fill_dataclass(cfg.motivation, {k: v for k, v in m.items() if k != "weights"}, errors, "motivation")
         if "weights" in m:
@@ -384,8 +500,50 @@ def config_from_dict(data: dict) -> AppConfig:
         errors.append("wechat.group_chime_cooldown_seconds 须在 [60, 86400]")
     if not (1 <= cfg.wechat.group_chime_daily_max <= 50):
         errors.append("wechat.group_chime_daily_max 须在 [1, 50]")
+    if not (60 <= cfg.wechat.task_stale_seconds <= 86400):
+        errors.append("wechat.task_stale_seconds 须在 [60, 86400]")
     if not (cfg.wechat.media_dir == "" or re.match(r"^[A-Za-z0-9_./\\-]+$", cfg.wechat.media_dir)):
         errors.append("wechat.media_dir 含非法字符")
+    if cfg.song_gen.provider not in ("acestep_cpp", "mock"):
+        errors.append("song_gen.provider 只支持 acestep_cpp / mock")
+    if not (10 <= cfg.song_gen.duration_seconds <= 600):
+        errors.append("song_gen.duration_seconds 须在 [10, 600]")
+    if not (30 <= cfg.song_gen.max_duration_seconds <= 600):
+        errors.append("song_gen.max_duration_seconds 须在 [30, 600]")
+    if cfg.song_gen.duration_seconds > cfg.song_gen.max_duration_seconds:
+        errors.append("song_gen.duration_seconds 不能超过 max_duration_seconds")
+    if not (100 <= cfg.song_gen.max_lyrics_chars <= 3000):
+        errors.append("song_gen.max_lyrics_chars 须在 [100, 3000]")
+    vc = cfg.song_gen
+    if vc.voice_clone_enabled:
+        if not str(vc.voice_clone_endpoint or "").strip() and not (
+                str(vc.voice_clone_python_exe or "").strip()
+                and str(vc.voice_clone_script or "").strip()):
+            errors.append("song_gen.voice_clone 开启后需配 endpoint 或 python_exe+script")
+        if not str(vc.voice_clone_reference or "").strip():
+            errors.append("song_gen.voice_clone_reference 开换音色后必须填")
+        if vc.voice_clone_script and not os.path.isfile(vc.voice_clone_script):
+            errors.append(f"song_gen.voice_clone_script 不存在：{vc.voice_clone_script}")
+        if vc.voice_clone_endpoint and not re.match(r"^https?://", vc.voice_clone_endpoint):
+            errors.append("song_gen.voice_clone_endpoint 须为 http(s) 地址")
+    if not (10 <= vc.voice_clone_steps <= 50):
+        errors.append("song_gen.voice_clone_steps 须在 [10, 50]")
+    if not (60 <= vc.voice_clone_timeout <= 1800):
+        errors.append("song_gen.voice_clone_timeout 须在 [60, 1800]")
+    if not (5 <= cfg.song_gen.max_send_seconds <= 60):
+        errors.append("song_gen.max_send_seconds 须在 [5, 60]")
+    if not (1 <= cfg.song_gen.inference_steps <= 64):
+        errors.append("song_gen.inference_steps 须在 [1, 64]")
+    if cfg.song_gen.output_format not in ("mp3", "wav16"):
+        errors.append("song_gen.output_format 只支持 mp3 / wav16")
+    if not (64 <= cfg.song_gen.mp3_bitrate <= 320):
+        errors.append("song_gen.mp3_bitrate 须在 [64, 320]")
+    if cfg.song_gen.send_mode not in ("bubble", "file", "both"):
+        errors.append("song_gen.send_mode 只支持 bubble / file / both")
+    if not re.match(r"^https?://", cfg.song_gen.base_url or ""):
+        errors.append("song_gen.base_url 须为 http(s) 地址")
+    if not (10 <= cfg.song_gen.timeout_seconds <= 900):
+        errors.append("song_gen.timeout_seconds 须在 [10, 900]")
     _raise(errors)
     return cfg
 

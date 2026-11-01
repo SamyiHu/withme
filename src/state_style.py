@@ -122,3 +122,24 @@ def mechanical_fix(text: str, constraints: list) -> str:
                 for m in hits[:surplus]:
                     text = text.replace(m.group(0), "", 1)
     return text
+
+
+def toolong_backstop(text: str, limit: int = 18) -> str:
+    """审核门"重写后仍超长"的最后兜底：截到 limit 字内（真人中位 9.5 字）。
+
+    边界=换行/句末标点/逗号/空格，取前 limit 字内最后一个（位置>=3，免得切出
+    "行哦，"这种残头）；实在没有边界就显式加省略号，绝不无声切断在词中间。
+
+    实测病灶（2026-10-29，真实病例）：旧逻辑只认 pos>=8 的标点、不认换行——
+    "行哦，那我用下功夫瞅瞅\n\n先说个粗略的…" 的唯一逗号在 pos2 够不到门槛，
+    被一刀切成 18 字硬 slice："…瞅瞅\n\n先说个粗略"，词中间断掉、空行留在
+    正中，对方读起来就是"消息被截断了"。"""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    best = -1
+    for i, ch in enumerate(head):
+        if i >= 3 and ch in "\n。！？；，,!? ":
+            best = i
+    return (head[:best] if best >= 0 else head + "…").strip("，。！？；,!? \n\t")
