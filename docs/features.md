@@ -224,7 +224,7 @@ DeepSeek 系模型按**请求前缀**自动命中上下文缓存（命中部分�
 执行/审计/结果回填全走现成管线。最小模板只有 `DESC + ACTIONS` 两个变量，handler 拿
 `(params, ctx)`，ctx 提供网络抓取、桌面通知、按插件隔离的 KV 存储，**拿不到**数据库与
 Agent 内部。范例：`plugins/weather.py`（Open-Meteo 免 key）。坏插件不拖垮主程序；
-`settings` 表 `plugins_disabled` 可禁用。详见 [plugins/README.md](../plugins/README.md)。
+`settings` 表 `plugins_disabled` 可禁用。详见 [plugins/README.md](https://github.com/SamyiHu/withme/blob/main/plugins/README.md)。
 
 **通道插件**：不需要进进程——REST API 就是边界（[api.md](api.md)）。
 
